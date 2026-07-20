@@ -1,100 +1,124 @@
 $ErrorActionPreference = "SilentlyContinue"
 
-Clear-Host
-Write-Host ""
-Write-Host -ForegroundColor Green " Brother tranquilo no es virus - Expresa ¡Paraguayito! " -NoNewLine
-Write-Host -ForegroundColor Yellow " discord.gg/electrichcf"
-Write-Host ""
+function Get-Signature {
 
-function Test-Admin {
-    $currentUser = New-Object Security.Principal.WindowsPrincipal $([Security.Principal.WindowsIdentity]::GetCurrent())
-    $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+    [CmdletBinding()]
+     param (
+        [string[]]$FilePath
+    )
+
+    $Existence = Test-Path -PathType "Leaf" -Path $FilePath
+    $Authenticode = (Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction SilentlyContinue).Status
+    $Signature = "Invalid Signature (UnknownError)"
+
+    if ($Existence) {
+        if ($Authenticode -eq "Valid") {
+            $Signature = "Firma Valida"
+        }
+        elseif ($Authenticode -eq "NotSigned") {
+            $Signature = "Firma Invalida (No esta firmado)"
+        }
+        elseif ($Authenticode -eq "HashMismatch") {
+            $Signature = "Firma Invalida (HashMismatch)"
+        }
+        elseif ($Authenticode -eq "NotTrusted") {
+            $Signature = "Firma Invalida (NotTrusted)"
+        }
+        elseif ($Authenticode -eq "UnknownError") {
+            $Signature = "Firma Invalida (UnknownError)"
+        }
+        return $Signature
+    } else {
+        $Signature = "El archivo no fue encontrado"
+        return $Signature
+    }
 }
 
+Clear-Host
+
+Write-Host "";
+Write-Host "";
+Write-Host -ForegroundColor Green " Brother tranquilo no es virus - Expresa  ¡Paraguayito! " -NoNewLine
+Write-Host -ForegroundColor Yellow " discord.gg/electrichcf";
+Write-Host "";
+
+function Test-Admin {;$currentUser = New-Object Security.Principal.WindowsPrincipal $([Security.Principal.WindowsIdentity]::GetCurrent());$currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator);}
 if (!(Test-Admin)) {
     Write-Warning "Brother ejecutalo como ADMIN :V"
-    Start-Sleep 5
+    Start-Sleep 10
     Exit
 }
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$Desktop = [Environment]::GetFolderPath("Desktop")
-$Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
 
-# Solo buscar en estas carpetas (donde suelen estar los cheats)
-$Paths = @(
-    "$env:USERPROFILE\Desktop",
-    "$env:USERPROFILE\Downloads",
-    "$env:USERPROFILE\Documents",
-    "$env:USERPROFILE\AppData\Local\Temp",
-    "$env:USERPROFILE\AppData\Roaming\.minecraft",
-    "C:\Program Files",
-    "C:\Program Files (x86)"
-)
-
-Write-Host "[1/4] Buscando .jar modificados (20 min)..." -ForegroundColor Green
-$Jars = @()
-foreach ($p in $Paths) {
-    if (Test-Path $p) {
-        $Jars += Get-ChildItem -Path $p -Filter *.jar -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-20) } | ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
-    }
+if (!(Get-PSDrive -Name HKLM -PSProvider Registry)){
+    Try{New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE}
+    Catch{Write-Warning "Error montando HKEY_Local_Machine"}
 }
-$JarsLog = Join-Path $Desktop "Jars_20min_$Fecha.txt"
-$Jars | Out-File -FilePath $JarsLog -Encoding UTF8
-Write-Host "   Encontrados: $($Jars.Count)" -ForegroundColor Cyan
-
-Write-Host "[2/4] Buscando .exe modificados (20 min)..." -ForegroundColor Green
-$Exes = @()
-foreach ($p in $Paths) {
-    if (Test-Path $p) {
-        $Exes += Get-ChildItem -Path $p -Filter *.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-20) } | ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
-    }
+$bv = ("bam", "bam\State")
+Try{$Users = foreach($ii in $bv){Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($ii)\UserSettings\" | Select-Object -ExpandProperty PSChildName}}
+Catch{
+    Write-Warning "Error Parseando BAM Key. Probablemente no soporta tu version de Windows :( "
+    Exit
 }
-$ExesLog = Join-Path $Desktop "Exes_20min_$Fecha.txt"
-$Exes | Out-File -FilePath $ExesLog -Encoding UTF8
-Write-Host "   Encontrados: $($Exes.Count)" -ForegroundColor Cyan
+$rpath = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\","HKLM:\SYSTEM\CurrentControlSet\Services\bam\state\")
 
-Write-Host "[3/4] Buscando .dll modificados (20 min)..." -ForegroundColor Green
-$Dlls = @()
-foreach ($p in $Paths) {
-    if (Test-Path $p) {
-        $Dlls += Get-ChildItem -Path $p -Filter *.dll -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-20) } | ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
-    }
-}
-$DllsLog = Join-Path $Desktop "Dlls_20min_$Fecha.txt"
-$Dlls | Out-File -FilePath $DllsLog -Encoding UTF8
-Write-Host "   Encontrados: $($Dlls.Count)" -ForegroundColor Cyan
+$UserTime = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").TimeZoneKeyName
+$UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
+$UserDay = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").DaylightBias
 
-Write-Host "[4/4] Buscando eliminados (USN Journal)..." -ForegroundColor Green
-$Eliminados = @()
-$exesDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
-$dllsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
-$jarsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.jar` | findstr /i /c:`"0x80000200`"" 2>$null
-$todosDel = $exesDel + $dllsDel + $jarsDel
-foreach ($linea in $todosDel) {
-    if ($linea -match "ERROR" -or $linea -eq "") { continue }
-    $Eliminados += $linea.Trim()
-}
-$EliminadosLog = Join-Path $Desktop "Eliminados_20min_$Fecha.txt"
-$Eliminados | Out-File -FilePath $EliminadosLog -Encoding UTF8
-Write-Host "   Eliminados: $($Eliminados.Count)" -ForegroundColor Cyan
+$Bam = Foreach ($Sid in $Users){$u++
+            
+        foreach($rp in $rpath){
+           $BamItems = Get-Item -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
+           Write-Host -ForegroundColor Green "Extrayendo " -NoNewLine
+           Write-Host -ForegroundColor Blue "$($rp)UserSettings\$SID"
+           $bi = 0 
+
+            Try{
+            $objSID = New-Object System.Security.Principal.SecurityIdentifier($Sid)
+            $User = $objSID.Translate( [System.Security.Principal.NTAccount]) 
+            $User = $User.Value
+            }
+            Catch{$User=""}
+            $i=0
+            ForEach ($Item in $BamItems){$i++
+		    $Key = Get-ItemProperty -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue| Select-Object -ExpandProperty $Item
+	
+            If($key.length -eq 24){
+                $Hex=[System.BitConverter]::ToString($key[7..0]) -replace "-",""
+                $TimeLocal = Get-Date ([DateTime]::FromFileTime([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
+			    $TimeUTC = Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
+			    $Bias = -([convert]::ToInt32([Convert]::ToString($UserBias,2),2))
+			    $Day = -([convert]::ToInt32([Convert]::ToString($UserDay,2),2)) 
+			    $Biasd = $Bias/60
+			    $Dayd = $Day/60
+			    $TImeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).addminutes($Bias) -Format "yyyy-MM-dd HH:mm:ss") 
+			    $d = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
+			    {((split-path -path $item).Remove(23)).trimstart("\Device\HarddiskVolume")} else {$d = ""}
+			    $f = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
+			    {Split-path -leaf ($item).TrimStart()} else {$item}	
+			    $cp = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
+			    {($item).Remove(1,23)} else {$cp = ""}
+			    $path = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
+			    {Join-Path -Path "C:" -ChildPath $cp} else {$path = ""}			
+			    $sig = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
+			    {Get-Signature -FilePath $path} else {$sig = ""}				
+                [PSCustomObject]@{
+                            'Tiempo del examinador' = $TimeLocal
+						    'Tiempo de ultima ejecucion (UTC)'= $TimeUTC
+						    'Tiempo de ultima ejecucion (Hora del usuario)' = $TimeUser
+						     Application = 	$f
+						     Path =  		$path
+                             Signature =          $Sig
+						     User =         $User
+						     SID =          $Sid
+                             Regpath =        $rp
+                             }}}}}
+
+$Bam | Out-GridView -PassThru -Title "Entradas BAM: $($Bam.count)  - Zona Horaria del Usuario: ($UserTime) -> ActiveBias: ( $Bias) - DayLightTime: ($Day)"
 
 $sw.stop()
-$t = $sw.Elapsed.TotalSeconds
-
+$t = $sw.Elapsed.TotalMinutes
 Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host " ANALISIS COMPLETADO" -ForegroundColor Yellow
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Archivos guardados en el escritorio:" -ForegroundColor White
-Write-Host "  - Jars_20min_$Fecha.txt ($($Jars.Count))" -ForegroundColor Green
-Write-Host "  - Exes_20min_$Fecha.txt ($($Exes.Count))" -ForegroundColor Green
-Write-Host "  - Dlls_20min_$Fecha.txt ($($Dlls.Count))" -ForegroundColor Green
-Write-Host "  - Eliminados_20min_$Fecha.txt ($($Eliminados.Count))" -ForegroundColor Green
-Write-Host ""
-Write-Host "Tiempo: $t segundos" -ForegroundColor Yellow
-Write-Host ""
-Write-Host "Presiona ENTER para abrir el escritorio..." -ForegroundColor Yellow
-Read-Host
-explorer $Desktop
+Write-Host "Se tardo $t Minutos" -ForegroundColor Yellow
