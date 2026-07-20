@@ -110,7 +110,7 @@ Write-Host ""
 Write-Host "Tiempo: $t Minutos" -ForegroundColor Yellow
 Write-Host ""
 
-# Mostrar en el panel estilo original
+# Mostrar en el panel estilo original (SOLO si hay cheats, si no muestra ultimos 30 min)
 if ($BamCheats.Count -gt 0) {
     Write-Host "Mostrando SOLO posibles cheats en el panel..." -ForegroundColor Red
     $BamCheats | Out-GridView -PassThru -Title "CHEATS DETECTADOS - ($($BamCheats.Count)) - Zona Horaria: ($UserTime)"
