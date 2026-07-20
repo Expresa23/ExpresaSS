@@ -33,9 +33,8 @@ function Get-Signature {
 
 Clear-Host
 Write-Host ""
-Write-Host ""
-Write-Host -ForegroundColor Green " Brother tranquilo no es virus - Expresa (bqge) ¡Paraguayito! " -NoNewLine
-Write-Host -ForegroundColor Yellow " discord.gg/bqge"
+Write-Host -ForegroundColor Green " Brother tranquilo no es virus - Expresa (bqge)  ¡Paraguayito! " -NoNewLine
+Write-Host -ForegroundColor Yellow " discord.gg/maurizzx_"
 Write-Host ""
 
 function Test-Admin {
@@ -51,6 +50,76 @@ if (!(Test-Admin)) {
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
+$Desktop = [Environment]::GetFolderPath("Desktop")
+$Folder = Join-Path $Desktop "Analisis_$(Get-Date -Format 'yyyy-MM-dd_HH-mm')"
+if (!(Test-Path $Folder)) { New-Item -ItemType Directory -Path $Folder -Force | Out-Null }
+
+$ExcludePaths = @(
+    "C:\Windows\", "C:\Windows\System32\", "C:\Windows\SysWOW64\",
+    "C:\Program Files\", "C:\Program Files (x86)\",
+    "C:\Windows\WinSxS\", "C:\Windows\Microsoft.NET\",
+    "C:\Windows\assembly\", "C:\Windows\servicing\",
+    "C:\Windows\Installer\", "C:\Windows\SystemApps\",
+    "C:\$Recycle.Bin\", "C:\System Volume Information\"
+)
+
+function Is-ExcludedPath {
+    param([string]$Path)
+    foreach ($excl in $ExcludePaths) {
+        if ($Path -like "$excl*") { return $true }
+    }
+    return $false
+}
+
+Write-Host "[1/5] Buscando archivos MODIFICADOS en los ultimos 10 min..." -ForegroundColor Green
+$Modificados = @()
+$exes = cmd /c "forfiles /p C:\ /s /m *.exe /d -10 /c `"cmd /c echo @path @fdate @ftime`"" 2>$null
+$dlls = cmd /c "forfiles /p C:\ /s /m *.dll /d -10 /c `"cmd /c echo @path @fdate @ftime`"" 2>$null
+$todos = $exes + $dlls
+foreach ($linea in $todos) {
+    if ($linea -match "ERROR" -or $linea -eq "") { continue }
+    $path = $linea.Trim()
+    if (!(Is-ExcludedPath -Path $path)) {
+        $Modificados += $linea.Trim()
+    }
+}
+$ModificadosLog = Join-Path $Folder "Modificados.txt"
+$Modificados | Out-File -FilePath $ModificadosLog -Encoding UTF8
+Write-Host "   Encontrados: $($Modificados.Count)" -ForegroundColor Cyan
+
+Write-Host "[2/5] Buscando archivos ELIMINADOS..." -ForegroundColor Green
+$Eliminados = @()
+$exesDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
+$dllsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
+$todosDel = $exesDel + $dllsDel
+foreach ($linea in $todosDel) {
+    if ($linea -match "ERROR" -or $linea -eq "") { continue }
+    $path = $linea.Trim()
+    if (!(Is-ExcludedPath -Path $path)) {
+        $Eliminados += $linea.Trim()
+    }
+}
+$EliminadosLog = Join-Path $Folder "Eliminados.txt"
+$Eliminados | Out-File -FilePath $EliminadosLog -Encoding UTF8
+Write-Host "   Encontrados: $($Eliminados.Count)" -ForegroundColor Cyan
+
+Write-Host "[3/5] Buscando archivos CREADOS en los ultimos 10 min..." -ForegroundColor Green
+$Creados = @()
+$exesCr = cmd /c "forfiles /p C:\ /s /m *.exe /d +0 /c `"cmd /c echo @path @fdate @ftime`"" 2>$null
+$dllsCr = cmd /c "forfiles /p C:\ /s /m *.dll /d +0 /c `"cmd /c echo @path @fdate @ftime`"" 2>$null
+$todosCr = $exesCr + $dllsCr
+foreach ($linea in $todosCr) {
+    if ($linea -match "ERROR" -or $linea -eq "") { continue }
+    $path = $linea.Trim()
+    if (!(Is-ExcludedPath -Path $path)) {
+        $Creados += $linea.Trim()
+    }
+}
+$CreadosLog = Join-Path $Folder "Creados.txt"
+$Creados | Out-File -FilePath $CreadosLog -Encoding UTF8
+Write-Host "   Encontrados: $($Creados.Count)" -ForegroundColor Cyan
+
+Write-Host "[4/5] Extrayendo BAM (Ultimos ejecutados)..." -ForegroundColor Green
 if (!(Get-PSDrive -Name HKLM -PSProvider Registry)){
     Try{New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE}
     Catch{Write-Warning "Error montando HKEY_Local_Machine"}
@@ -60,68 +129,126 @@ $bv = ("bam", "bam\State")
 Try{$Users = foreach($ii in $bv){Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($ii)\UserSettings\" | Select-Object -ExpandProperty PSChildName}}
 Catch{
     Write-Warning "Error Parseando BAM Key. Probablemente no soporta tu version de Windows :( "
-    Exit
+    $Users = @()
 }
 
 $rpath = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\","HKLM:\SYSTEM\CurrentControlSet\Services\bam\state\")
-
 $UserTime = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").TimeZoneKeyName
 $UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
 $UserDay = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").DaylightBias
 
-$Bam = Foreach ($Sid in $Users){$u++
-    foreach($rp in $rpath){
+$Bam = @()
+foreach ($Sid in $Users) {
+    foreach($rp in $rpath) {
         $BamItems = Get-Item -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
-        Write-Host -ForegroundColor Green "Extrayendo " -NoNewLine
-        Write-Host -ForegroundColor Blue "$($rp)UserSettings\$SID"
-        $bi = 0 
-        Try{
+        Try {
             $objSID = New-Object System.Security.Principal.SecurityIdentifier($Sid)
-            $User = $objSID.Translate( [System.Security.Principal.NTAccount]) 
-            $User = $User.Value
+            $User = $objSID.Translate([System.Security.Principal.NTAccount]).Value
         }
-        Catch{$User=""}
-        $i=0
-        ForEach ($Item in $BamItems){$i++
-            $Key = Get-ItemProperty -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue| Select-Object -ExpandProperty $Item
-            If($key.length -eq 24){
-                $Hex=[System.BitConverter]::ToString($key[7..0]) -replace "-",""
-                $TimeLocal = Get-Date ([DateTime]::FromFileTime([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
-                $TimeUTC = Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
-                $Bias = -([convert]::ToInt32([Convert]::ToString($UserBias,2),2))
-                $Day = -([convert]::ToInt32([Convert]::ToString($UserDay,2),2)) 
-                $Biasd = $Bias/60
-                $Dayd = $Day/60
-                $TImeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).addminutes($Bias) -Format "yyyy-MM-dd HH:mm:ss") 
-                $d = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
-                {((split-path -path $item).Remove(23)).trimstart("\Device\HarddiskVolume")} else {$d = ""}
-                $f = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
-                {Split-path -leaf ($item).TrimStart()} else {$item}	
-                $cp = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
-                {($item).Remove(1,23)} else {$cp = ""}
-                $path = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
-                {Join-Path -Path "C:" -ChildPath $cp} else {$path = ""}			
-                $sig = if((((split-path -path $item) | ConvertFrom-String -Delimiter "\\").P3)-match '\d{1}')
-                {Get-Signature -FilePath $path} else {$sig = ""}				
-                [PSCustomObject]@{
-                    'Tiempo del examinador' = $TimeLocal
-                    'Tiempo de ultima ejecucion (UTC)'= $TimeUTC
-                    'Tiempo de ultima ejecucion (Hora del usuario)' = $TimeUser
-                    Application = $f
-                    Path = $path
-                    Signature = $Sig
-                    User = $User
-                    SID = $Sid
-                    Regpath = $rp
+        Catch { $User = "" }
+        foreach ($Item in $BamItems) {
+            $Key = Get-ItemProperty -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $Item
+            if ($Key.Length -eq 24) {
+                $Hex = [System.BitConverter]::ToString($key[7..0]) -replace "-",""
+                $TimeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).AddMinutes(-([convert]::ToInt32([Convert]::ToString($UserBias,2),2))/60) -Format "yyyy-MM-dd HH:mm:ss")
+                $path = $Item -replace "\\Device\\HarddiskVolume\d+\\", "C:\"
+                if (!(Is-ExcludedPath -Path $path)) {
+                    $Bam += [PSCustomObject]@{
+                        'Tiempo' = $TimeUser
+                        'Archivo' = $path
+                        'Usuario' = $User
+                        'SID' = $Sid
+                        'Firma' = Get-Signature -FilePath $path
+                    }
                 }
             }
         }
     }
 }
 
-$Bam | Out-GridView -PassThru -Title "Entradas BAM: $($Bam.count)  - Zona Horaria del Usuario: ($UserTime) -> ActiveBias: ( $Bias) - DayLightTime: ($Day)"
+$BamUltimos10 = $Bam | Where-Object { [datetime]$_.Tiempo -gt (Get-Date).AddMinutes(-10) }
+$BamLog = Join-Path $Folder "BAM_Ejecutados.txt"
+$BamUltimos10 | Out-File -FilePath $BamLog -Encoding UTF8
+Write-Host "   Encontrados en BAM (ultimos 10 min): $($BamUltimos10.Count)" -ForegroundColor Cyan
+
+Write-Host "[5/5] Buscando eventos de ejecucion (Security Log)..." -ForegroundColor Green
+$EventosLog = Join-Path $Folder "Eventos_Ejecucion.txt"
+$EventosEncontrados = @()
+Try {
+    $Eventos = Get-WinEvent -FilterHashtable @{
+        LogName='Security'
+        ID=4688
+        StartTime=(Get-Date).AddMinutes(-10)
+    } -ErrorAction SilentlyContinue
+    foreach ($Evento in $Eventos) {
+        $Proceso = $Evento.Properties[8].Value
+        if (($Proceso -like "*.exe" -or $Proceso -like "*.dll") -and !(Is-ExcludedPath -Path $Proceso)) {
+            $EventosEncontrados += "$($Evento.TimeCreated) - $($Evento.Properties[1].Value) ejecuto: $Proceso"
+        }
+    }
+} Catch {
+    Write-Warning "No se pudieron leer los eventos de auditoria."
+}
+$EventosEncontrados | Out-File -FilePath $EventosLog -Encoding UTF8
+Write-Host "   Eventos encontrados: $($EventosEncontrados.Count)" -ForegroundColor Cyan
+
+$ResumenLog = Join-Path $Folder "Resumen_Completo.txt"
+$Resumen = @"
+========================================
+    ANALISIS FORENSE - RESULTADOS
+========================================
+Fecha: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+Equipo: $env:COMPUTERNAME
+Usuario: $env:USERNAME
+Carpeta: $Folder
+========================================
+
+[1] ARCHIVOS MODIFICADOS (Ultimos 10 min): $($Modificados.Count)
+----------------------------------------
+$($Modificados -join "`n")
+
+[2] ARCHIVOS ELIMINADOS: $($Eliminados.Count)
+----------------------------------------
+$($Eliminados -join "`n")
+
+[3] ARCHIVOS CREADOS (Ultimos 10 min): $($Creados.Count)
+----------------------------------------
+$($Creados -join "`n")
+
+[4] BAM - ULTIMOS EJECUTADOS (Ultimos 10 min): $($BamUltimos10.Count)
+----------------------------------------
+$($BamUltimos10 | Format-Table -AutoSize | Out-String)
+
+[5] EVENTOS DE SEGURIDAD (Ultimos 10 min): $($EventosEncontrados.Count)
+----------------------------------------
+$($EventosEncontrados -join "`n")
+
+========================================
+FIN DEL RESUMEN
+========================================
+"@
+$Resumen | Out-File -FilePath $ResumenLog -Encoding UTF8
 
 $sw.stop()
 $t = $sw.Elapsed.TotalMinutes
+
 Write-Host ""
-Write-Host "Se tardo $t Minutos" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host " ANALISIS COMPLETADO" -ForegroundColor Yellow
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Carpeta: $Folder" -ForegroundColor White
+Write-Host ""
+Write-Host "Archivos generados:" -ForegroundColor Green
+Write-Host "  - Modificados.txt ($($Modificados.Count))" -ForegroundColor White
+Write-Host "  - Eliminados.txt ($($Eliminados.Count))" -ForegroundColor White
+Write-Host "  - Creados.txt ($($Creados.Count))" -ForegroundColor White
+Write-Host "  - BAM_Ejecutados.txt ($($BamUltimos10.Count))" -ForegroundColor White
+Write-Host "  - Eventos_Ejecucion.txt ($($EventosEncontrados.Count))" -ForegroundColor White
+Write-Host "  - Resumen_Completo.txt" -ForegroundColor White
+Write-Host ""
+Write-Host "Tiempo: $t Minutos" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Presiona ENTER para abrir la carpeta..." -ForegroundColor Yellow
+Read-Host
+Invoke-Item $Folder
