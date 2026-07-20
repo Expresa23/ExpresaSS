@@ -1,40 +1,32 @@
-$ErrorActionPreference = "SilentlyContinue"
-$Global:FechaInicio = (Get-Date).AddMinutes(-30)
-$Global:ScriptPath = $MyInvocation.MyCommand.Path
-$Global:ScriptName = "AC-BQGE.ps1"
-$Global:BackupPath = "$env:TEMP\AC-BQGE_Backup"
+# AC-BQGE Enhanced Edition
+# Anti-Cheat BQGE - Analisis Forense
+# Mejoras: Papelera de reciclaje, Self-Check anti-borrado,
+# deteccion de self-destruct, integridad del script, modo sigiloso
+# ============================================
 
-# ============================================
-# ANTI SELF-DESTRUCT - Proteccion contra borrado
-# ============================================
-function Protect-Script {
-    # Crear backup del script en caso de auto-destruccion
-    if (!(Test-Path $Global:BackupPath)) {
-        New-Item -ItemType Directory -Path $Global:BackupPath -Force | Out-Null
-    }
-    
-    # Guardar copia del script actual
-    if (Test-Path $Global:ScriptPath) {
-        $BackupFile = "$Global:BackupPath\$Global:ScriptName"
-        Copy-Item -Path $Global:ScriptPath -Destination $BackupFile -Force -ErrorAction SilentlyContinue
-    }
-    
-    # Verificar integridad del script en cada ejecucion
-    if (Test-Path $BackupFile) {
-        $OriginalHash = (Get-FileHash -Path $Global:ScriptPath -Algorithm MD5).Hash
-        $BackupHash = (Get-FileHash -Path $BackupFile -Algorithm MD5).Hash
-        if ($OriginalHash -ne $BackupHash) {
-            Write-Host "  [!] ALERTA: El script ha sido modificado!" -ForegroundColor Red
-            Write-Host "  [!] Restaurando version original..." -ForegroundColor Yellow
-            Copy-Item -Path $BackupFile -Destination $Global:ScriptPath -Force
-        }
-    }
+$ErrorActionPreference = "SilentlyContinue"
+$Global:FechaInicio = (Get-Date).AddMinutes(-120)
+$Global:SelfDestructDetected = $false
+$Global:ScriptHash = $null
+$Global:ModoSigiloso = $false
+$Global:LogFile = $null
+
+try {
+    $Global:ScriptHash = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash
+} catch {
+    $Global:ScriptHash = "NO_DISPONIBLE"
 }
 
-# ============================================
-# INICIALIZAR PROTECCION
-# ============================================
-Protect-Script
+function Write-Log {
+    param([string]$Message, [string]$Color = "White")
+    if ($Global:ModoSigiloso) {
+        if ($Global:LogFile) {
+            "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Message" | Out-File -FilePath $Global:LogFile -Encoding UTF8 -Append
+        }
+    } else {
+        Write-Host "  $Message" -ForegroundColor $Color
+    }
+}
 
 function Show-Banner {
     Clear-Host
@@ -53,17 +45,20 @@ function Show-Banner {
     Write-Host "  ██████╔╝╚██████╔╝   ██║   ███████╗" -ForegroundColor White
     Write-Host "  ╚═════╝  ╚═════╝    ╚═╝   ╚══════╝" -ForegroundColor White
     Write-Host ""
-    Write-Host "  ========================================" -ForegroundColor Red
-    Write-Host "     ANTI-CHEAT BQGE - ANALISIS FORENSE" -ForegroundColor White
-    Write-Host "  ========================================" -ForegroundColor Red
-    Write-Host "  FILTRO: ULTIMOS 30 MINUTOS" -ForegroundColor Yellow
-    Write-Host "  PROTECCION: ANTI SELF-DESTRUCT ACTIVADA" -ForegroundColor Green
+    Write-Host "  ================================================" -ForegroundColor Red
+    Write-Host "     ANTI-CHEAT BQGE - ENHANCED EDITION" -ForegroundColor White
+    Write-Host "  ================================================" -ForegroundColor Red
+    Write-Host "  FILTRO: ULTIMAS 2 HORAS" -ForegroundColor Yellow
+    if ($Global:SelfDestructDetected) {
+        Write-Host "  [!!!] SELF-DESTRUCT DETECTADO" -ForegroundColor Red
+    }
+    Write-Host "  INTEGRIDAD: $($Global:ScriptHash.Substring(0,16))..." -ForegroundColor DarkGray
     Write-Host ""
 }
 
 function Test-Admin {
     $currentUser = New-Object Security.Principal.WindowsPrincipal $([Security.Principal.WindowsIdentity]::GetCurrent())
-    $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
 }
 
 function Show-Menu {
@@ -72,424 +67,763 @@ function Show-Menu {
     Write-Host "  [2] Buscar archivos .exe" -ForegroundColor White
     Write-Host "  [3] Buscar archivos .dll" -ForegroundColor White
     Write-Host "  [4] Buscar TODOS (.jar, .exe, .dll)" -ForegroundColor Red
-    Write-Host "  [5] Buscar archivos eliminados + Papelera" -ForegroundColor White
+    Write-Host "  [5] Archivos eliminados (USN Journal)" -ForegroundColor White
     Write-Host "  [6] BAM - Ultimas ejecuciones" -ForegroundColor White
     Write-Host "  [7] DETECTAR HOOKS DE INYECCION" -ForegroundColor Red
-    Write-Host "  [8] Analisis COMPLETO (TODO)" -ForegroundColor Red
-    Write-Host "  [9] Salir" -ForegroundColor White
+    Write-Host "  [8] PAPELERA DE RECICLAJE" -ForegroundColor White
+    Write-Host "  [9] SELF-CHECK (anti-borrado)" -ForegroundColor Yellow
+    Write-Host "  [10] Analisis COMPLETO (TODO)" -ForegroundColor Red
+    Write-Host "  [11] Verificar integridad del script" -ForegroundColor White
+    Write-Host "  [12] Modo sigiloso (log a archivo)" -ForegroundColor DarkGray
+    Write-Host "  [13] Salir" -ForegroundColor White
     Write-Host ""
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host ""
 }
 
-function Search-Files {
-    param([string]$Extension, [string]$Name)
-    
+function Check-SelfDestruct {
     Show-Banner
-    Write-Host "  BUSCANDO ARCHIVOS .$Extension (ULTIMOS 30 MIN)..." -ForegroundColor Red
+    Write-Host "  [SELF-CHECK] DETECTANDO AUTO-BORRADO..." -ForegroundColor Red
     Write-Host ""
-    
+
+    $sospechas = @()
+    $Hace2h = (Get-Date).AddMinutes(-120)
+
+    if (-not (Test-Path $PSCommandPath)) {
+        $sospechas += "[CRITICO] El script ha sido ELIMINADO del disco"
+        $Global:SelfDestructDetected = $true
+    }
+
+    Write-Host "  [1/5] Buscando tareas programadas sospechosas..." -ForegroundColor White
+    try {
+        $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+            $_.Actions -match "del|remove|erase|clean|wipe|self.destruct|cleanup|destroy|purge|delete"
+        }
+        foreach ($t in $tasks) {
+            $sospechas += "[TAREA] Tarea programada: $($t.TaskName) - Accion sospechosa"
+            Write-Host "      - $($t.TaskName)" -ForegroundColor Red
+        }
+    } catch {}
+
+    Write-Host "  [2/5] Buscando procesos con handles a este script..." -ForegroundColor White
+    try {
+        $procs = Get-Process -ErrorAction SilentlyContinue
+    } catch {}
+
+    Write-Host "  [3/5] Verificando permisos del script..." -ForegroundColor White
+    try {
+        $acl = Get-Acl -Path $PSCommandPath -ErrorAction SilentlyContinue
+        if (-not $acl) {
+            $sospechas += "[CRITICO] No se puede leer ACL del script - posible eliminacion en curso"
+        }
+    } catch {
+        $sospechas += "[CRITICO] Error al leer permisos - el archivo puede estar siendo borrado"
+    }
+
+    Write-Host "  [4/5] Verificando eventos de eliminacion en Security Log..." -ForegroundColor White
+    try {
+        $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4663]]" -MaxEvents 100 -ErrorAction SilentlyContinue
+        foreach ($e in $events) {
+            $msg = $e.Message
+            if ($msg -match [regex]::Escape($PSCommandPath)) {
+                $sospechas += "[EVENTO] Intento de acceso/eliminacion al script: $($e.TimeCreated)"
+            }
+        }
+    } catch {}
+
+    Write-Host "  [5/5] Verificando archivos .bat/.cmd temporales que referencien autoeliminacion..." -ForegroundColor White
+    $tempBats = Get-ChildItem -Path "$env:TEMP" -Filter "*.bat" -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt $Hace2h }
+    foreach ($bat in $tempBats) {
+        try {
+            $content = Get-Content -Path $bat.FullName -Raw -ErrorAction SilentlyContinue
+            if ($content -match "self.destruct|del.*\.ps1|erase.*\.ps1|cleanup|wipe") {
+                $sospechas += "[BAT] Archivo .bat con instrucciones de autoeliminacion: $($bat.FullName)"
+                Write-Host "      - $($bat.Name)" -ForegroundColor Red
+            }
+        } catch {}
+    }
+
+    Write-Host ""
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host "  RESULTADOS SELF-CHECK:" -ForegroundColor White
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host ""
+
+    if ($sospechas.Count -gt 0) {
+        Write-Host "  [!!!] SE DETECTARON $($sospechas.Count) INDICIOS DE SELF-DESTRUCT" -ForegroundColor Red
+        Write-Host ""
+        foreach ($s in $sospechas) {
+            Write-Host "  $s" -ForegroundColor White
+        }
+        $Global:SelfDestructDetected = $true
+    } else {
+        Write-Host "  No se encontraron indicios de auto-borrado." -ForegroundColor Green
+        Write-Host "  El script parece seguro." -ForegroundColor Green
+    }
+
+    Write-Host ""
+    Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
+    Read-Host
+}
+
+function Search-Files {
+    param([string]$Extension)
+
+    Show-Banner
+    Write-Host "  BUSCANDO ARCHIVOS .$Extension (ULTIMAS 2 HORAS)..." -ForegroundColor Red
+    Write-Host ""
+
     $Paths = @(
         "$env:USERPROFILE\Desktop",
         "$env:USERPROFILE\Downloads",
         "$env:USERPROFILE\Documents",
         "$env:USERPROFILE\AppData\Local\Temp",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft"
+        "$env:USERPROFILE\AppData\Roaming\.minecraft",
+        "$env:LOCALAPPDATA\VirtualStore",
+        "$env:USERPROFILE\AppData\Local\Programs",
+        "$env:USERPROFILE\AppData\Roaming"
     )
-    
+
     $Results = @()
-    $Hace30Min = (Get-Date).AddMinutes(-30)
-    
+    $Hace2h = (Get-Date).AddMinutes(-120)
+
     foreach ($p in $Paths) {
-        if (Test-Path $p) {
-            $Results += Get-ChildItem -Path $p -Filter "*.$Extension" -Recurse -ErrorAction SilentlyContinue | 
-                Where-Object { $_.LastWriteTime -gt $Hace30Min } |
-                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
+        if (Test-Path $p -ErrorAction SilentlyContinue) {
+            $Results += Get-ChildItem -Path $p -Filter "*.$Extension" -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $Hace2h } |
+                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime) - $($_.Length) bytes" }
         }
     }
-    
+
     if ($Results.Count -gt 0) {
         Write-Host "  ENCONTRADOS: $($Results.Count)" -ForegroundColor Green
         Write-Host ""
-        foreach ($r in $Results) {
-            Write-Host "  $r" -ForegroundColor White
-        }
+        foreach ($r in $Results) { Write-Host "  $r" -ForegroundColor White }
     } else {
-        Write-Host "  NO SE ENCONTRARON ARCHIVOS .$Extension EN LOS ULTIMOS 30 MIN" -ForegroundColor Yellow
+        Write-Host "  NO SE ENCONTRARON ARCHIVOS .$Extension EN LAS ULTIMAS 2 HORAS" -ForegroundColor Yellow
     }
-    
+
     Write-Host ""
-    Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
+    Write-Host "  Guardar lista en TXT? (S/N)" -ForegroundColor Yellow
+    if ((Read-Host).ToUpper() -eq "S") {
+        $Desktop = [Environment]::GetFolderPath("Desktop")
+        $Results | Out-File -FilePath "$Desktop\AC-BQGE_$Extension.txt" -Encoding UTF8
+        Write-Host "  Guardado en el escritorio." -ForegroundColor Green
+    }
+    Write-Host ""
+    Write-Host "  Presiona ENTER para continuar..."
     Read-Host
 }
 
 function Search-Deleted {
     Show-Banner
-    Write-Host "  BUSCANDO ARCHIVOS ELIMINADOS + PAPELERA (ULTIMOS 30 MIN)..." -ForegroundColor Red
+    Write-Host "  BUSCANDO ARCHIVOS ELIMINADOS (USN JOURNAL + EVENTOS)..." -ForegroundColor Red
     Write-Host ""
-    
+
     $Results = @()
-    $Hace30Min = (Get-Date).AddMinutes(-30)
-    
-    # 1. USN Journal - Archivos eliminados
-    Write-Host "  [1/3] Buscando en USN Journal..." -ForegroundColor White
-    $exesDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
-    $dllsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
-    $jarsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.jar` | findstr /i /c:`"0x80000200`"" 2>$null
-    $USNResults = $exesDel + $dllsDel + $jarsDel
-    
-    foreach ($r in $USNResults) {
-        if ($r -match "ERROR" -or $r -eq "") { continue }
-        $Results += "[USN] $r"
+    $usnFile = "$env:TEMP\usn_scan.txt"
+
+    Write-Host "  [1/2] Leyendo USN Journal (puede tardar hasta 30s)..." -ForegroundColor White
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = "cmd.exe"
+        $psi.Arguments = "/C fsutil usn readjournal c: csv > `"$usnFile`""
+        $psi.UseShellExecute = $false
+        $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p.WaitForExit(30000)) {
+            $p.Kill()
+            Write-Host "      USN Journal: Timeout (30s)" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "      Error al ejecutar fsutil" -ForegroundColor Yellow
     }
-    Write-Host "        Encontrados en USN: $($USNResults.Count)" -ForegroundColor Green
-    
-    # 2. Papelera de Reciclaje
-    Write-Host "  [2/3] Buscando en Papelera de Reciclaje..." -ForegroundColor White
-    Try {
-        $shell = New-Object -ComObject Shell.Application
-        $recycle = $shell.Namespace(0xA)
-        $PapeleraItems = @()
-        $recycle.Items() | ForEach-Object {
-            if ($_.Name -match '\.exe$|\.dll$|\.jar$') {
-                $PapeleraItems += "$($_.Name) - Eliminado: $($_.ModifyDate)"
+
+    if (Test-Path $usnFile) {
+        $raw = Get-Content $usnFile -TotalCount 100000 -ErrorAction SilentlyContinue
+        $Lines = $raw | Select-String -Pattern '\.(exe|dll|jar|ps1|bat|vbs|js|vbe|cmd)' |
+            Select-String -Pattern '0x80000200|0x80000000'
+        foreach ($line in $Lines) {
+            $tipo = if ($line -match '0x80000200') { "ELIMINADO" } else { "RENOMBRADO" }
+            $Results += "[$tipo] $line"
+        }
+        Remove-Item $usnFile -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Host "  [2/2] Verificando Eventos de Seguridad (Windows Audit)..." -ForegroundColor White
+    $Hace2h = (Get-Date).AddMinutes(-120)
+    try {
+        $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4663]]" -MaxEvents 200 -ErrorAction SilentlyContinue
+        foreach ($e in $events) {
+            if ($e.TimeCreated -gt $Hace2h) {
+                $msg = $e.Message
+                if ($msg -match '\.(exe|dll|jar|ps1|bat|vbs)') {
+                    $Results += "[EVENTO $($e.Id)] $($e.TimeCreated) - Intento de eliminacion"
+                }
             }
         }
-        foreach ($item in $PapeleraItems) {
-            $Results += "[PAPELERA] $item"
-        }
-        Write-Host "        Encontrados en Papelera: $($PapeleraItems.Count)" -ForegroundColor Green
-    } Catch {
-        Write-Host "        No se pudo acceder a la Papelera" -ForegroundColor Yellow
-    }
-    
-    # 3. Archivos recientemente eliminados (búsqueda rápida en Temp)
-    Write-Host "  [3/3] Buscando en carpetas temporales..." -ForegroundColor White
-    $TempPaths = @("$env:TEMP", "$env:USERPROFILE\AppData\Local\Temp")
-    $TempDeleted = @()
-    foreach ($p in $TempPaths) {
-        if (Test-Path $p) {
-            $TempDeleted += Get-ChildItem -Path $p -Recurse -ErrorAction SilentlyContinue | 
-                Where-Object { $_.Extension -match "\.exe|\.dll|\.jar" -and $_.LastWriteTime -gt $Hace30Min } |
-                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
-        }
-    }
-    foreach ($item in $TempDeleted) {
-        $Results += "[TEMP] $item"
-    }
-    Write-Host "        Encontrados en Temp: $($TempDeleted.Count)" -ForegroundColor Green
-    
-    if ($Results.Count -gt 0) {
-        Write-Host ""
-        Write-Host "  TOTAL ENCONTRADOS: $($Results.Count)" -ForegroundColor Green
-        Write-Host ""
-        foreach ($r in $Results) {
-            Write-Host "  $r" -ForegroundColor White
-        }
-    } else {
-        Write-Host ""
-        Write-Host "  NO SE ENCONTRARON ARCHIVOS ELIMINADOS EN LOS ULTIMOS 30 MIN" -ForegroundColor Yellow
-    }
-    
+    } catch {}
+
     Write-Host ""
-    Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
+    if ($Results.Count -gt 0) {
+        Write-Host "  ENCONTRADOS: $($Results.Count)" -ForegroundColor Green
+        Write-Host ""
+        foreach ($r in $Results) { Write-Host "  $r" -ForegroundColor White }
+    } else {
+        Write-Host "  NO SE ENCONTRARON ARCHIVOS ELIMINADOS EN LAS ULTIMAS 2 HORAS" -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+    Write-Host "  Guardar en TXT? (S/N)" -ForegroundColor Yellow
+    if ((Read-Host).ToUpper() -eq "S") {
+        $Desktop = [Environment]::GetFolderPath("Desktop")
+        $Results | Out-File -FilePath "$Desktop\AC-BQGE_Eliminados.txt" -Encoding UTF8
+        Write-Host "  Guardado." -ForegroundColor Green
+    }
+    Write-Host ""
+    Write-Host "  Presiona ENTER para continuar..."
     Read-Host
 }
 
 function Search-BAM {
     Show-Banner
-    Write-Host "  EXTRAYENDO BAM (ULTIMOS 30 MIN)..." -ForegroundColor Red
+    Write-Host "  EXTRAYENDO BAM (ULTIMAS 2 HORAS)..." -ForegroundColor Red
     Write-Host ""
-    
-    if (!(Get-PSDrive -Name HKLM -PSProvider Registry)){
-        Try{New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE}
-        Catch{}
+
+    if (!(Get-PSDrive -Name HKLM -PSProvider Registry 2>$null)) {
+        Try { New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE } Catch {}
     }
-    
-    $Users = Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
-    $UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
+
     $Bam = @()
-    $Hace30Min = (Get-Date).AddMinutes(-30)
-    
-    foreach ($Sid in $Users) {
-        $BamItems = Get-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
-        Try { $User = (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate([System.Security.Principal.NTAccount]).Value }
-        Catch { $User = "Sistema" }
-        
-        foreach ($Item in $BamItems) {
-            $Key = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $Item
-            if ($Key.Length -eq 24) {
-                $Hex = [System.BitConverter]::ToString($key[7..0]) -replace "-",""
-                $TimeUser = Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).AddMinutes(-([convert]::ToInt32([Convert]::ToString($UserBias,2),2))/60)
-                if ($TimeUser -gt $Hace30Min) {
-                    $path = $Item -replace "\\Device\\HarddiskVolume\d+\\", "C:\"
-                    $Bam += "[$($TimeUser.ToString('yyyy-MM-dd HH:mm:ss'))] $User - $path"
+    $Hace2h = (Get-Date).AddMinutes(-120)
+    $bamPaths = @(
+        "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\",
+        "HKLM:\SYSTEM\CurrentControlSet\Services\dam\UserSettings\"
+    )
+
+    foreach ($bamRoot in $bamPaths) {
+        $Users = Get-ChildItem -Path $bamRoot -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
+        foreach ($Sid in $Users) {
+            try {
+                $BamItems = Get-ItemProperty -Path "$bamRoot$Sid" -ErrorAction SilentlyContinue
+                $User = try { (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate([System.Security.Principal.NTAccount]).Value } catch { "Sistema" }
+
+                foreach ($Item in $BamItems.PSObject.Properties) {
+                    if ($Item.Name -match "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider") { continue }
+                    $Key = $Item.Value
+                    if ($Key.Length -ge 8) {
+                        $Hex = [System.BitConverter]::ToString($Key[7..0]) -replace "-",""
+                        $TimeUser = [DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))
+                        if ($TimeUser -gt $Hace2h) {
+                            $path = $Item.Name -replace '\\Device\\HarddiskVolume\d+\\', 'C:\'
+                            $Bam += "[$($TimeUser.ToString('yyyy-MM-dd HH:mm:ss'))] $User - $path"
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    if ($Bam.Count -gt 0) {
+        Write-Host "  ENCONTRADOS: $($Bam.Count)" -ForegroundColor Green
+        Write-Host ""
+        foreach ($r in $Bam) { Write-Host "  $r" -ForegroundColor White }
+    } else {
+        Write-Host "  NO SE ENCONTRARON EJECUCIONES EN LAS ULTIMAS 2 HORAS" -ForegroundColor Yellow
+    }
+
+    Write-Host ""
+    Write-Host "  Presiona ENTER para continuar..."
+    Read-Host
+}
+
+function Check-RecycleBin {
+    Show-Banner
+    Write-Host "  ANALIZANDO PAPELERA DE RECICLAJE..." -ForegroundColor Red
+    Write-Host ""
+
+    $Results = @()
+
+    Write-Host "  [1/3] Leyendo contenido de la papelera..." -ForegroundColor White
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $recycleBin = $shell.NameSpace(0xa)
+        $items = $recycleBin.Items()
+        foreach ($item in $items) {
+            $name = $item.Name
+            $ext = [System.IO.Path]::GetExtension($name).ToLower()
+            if ($ext -match '\.(exe|dll|jar|ps1|bat|vbs|js|vbe|cmd|scr|com|pif)') {
+                $dateDeleted = try { $item.ExtendedProperty("System.Recycle.DateDeleted") } catch { "?" }
+                $origPath = try { $item.ExtendedProperty("System.Recycle.OriginalLocation") } catch { "?" }
+                $filesize = try { $item.Size } catch { 0 }
+                $Results += "[$dateDeleted] $name - Origen: $origPath ($([math]::Round($filesize/1KB, 1)) KB)"
+                Write-Host "      - $name ($ext)" -ForegroundColor Yellow
+            }
+        }
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } catch {
+        Write-Host "      Error al leer papelera (posible falta de permisos)" -ForegroundColor Yellow
+    }
+
+    Write-Host "  [2/3] Buscando metadatos en C:`$Recycle.Bin..." -ForegroundColor White
+    $recyclePath = "C:`$Recycle.Bin"
+    if (Test-Path $recyclePath) {
+        $recycleDirs = Get-ChildItem -Path $recyclePath -Directory -ErrorAction SilentlyContinue
+        foreach ($dir in $recycleDirs) {
+            $files = Get-ChildItem -Path $dir.FullName -File -ErrorAction SilentlyContinue
+            foreach ($f in $files) {
+                if ($f.Length -gt 0 -and $f.Length -lt 5000) {
+                    $content = Get-Content -Path $f.FullName -Raw -ErrorAction SilentlyContinue
+                    if ($content -match '\.(exe|dll|jar|ps1|bat|vbs)') {
+                        $Results += "[METADATO] $($f.Name) -> archivo ejecutable en papelera"
+                        Write-Host "      - $($f.Name) referencia a archivo ejecutable" -ForegroundColor DarkYellow
+                    }
                 }
             }
         }
     }
-    
-    if ($Bam.Count -gt 0) {
-        Write-Host "  ENCONTRADOS: $($Bam.Count)" -ForegroundColor Green
+
+    Write-Host "  [3/3] Correlacionando con eventos de eliminacion..." -ForegroundColor White
+    $Hace2h = (Get-Date).AddMinutes(-120)
+    try {
+        $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4663]]" -MaxEvents 100 -ErrorAction SilentlyContinue
+        foreach ($e in $events) {
+            if ($e.TimeCreated -gt $Hace2h) {
+                $msg = $e.Message
+                if ($msg -match 'Recycle|papelera|trash|\$Recycle\.Bin') {
+                    $Results += "[PAPELERA/EVE] $($e.TimeCreated) - $($e.Id)"
+                }
+            }
+        }
+    } catch {}
+
+    Write-Host ""
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host "  ARCHIVOS EN PAPELERA: $($Results.Count)" -ForegroundColor White
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host ""
+
+    if ($Results.Count -gt 0) {
+        $ejecutables = $Results | Where-Object { $_ -match '\.(exe|dll|jar) ' }
+        if ($ejecutables.Count -gt 0) {
+            Write-Host "  [!] SE ENCONTRARON $($ejecutables.Count) ARCHIVOS EJECUTABLES EN PAPELERA" -ForegroundColor Red
+        }
         Write-Host ""
-        foreach ($r in $Bam) {
-            Write-Host "  $r" -ForegroundColor White
+        foreach ($r in $Results) { Write-Host "  $r" -ForegroundColor White }
+    } else {
+        Write-Host "  No se encontraron archivos ejecutables en la papelera." -ForegroundColor Green
+    }
+
+    Write-Host ""
+    Write-Host "  Guardar en TXT? (S/N)" -ForegroundColor Yellow
+    if ((Read-Host).ToUpper() -eq "S") {
+        $Desktop = [Environment]::GetFolderPath("Desktop")
+        $Results | Out-File -FilePath "$Desktop\AC-BQGE_Papelera.txt" -Encoding UTF8
+        Write-Host "  Guardado." -ForegroundColor Green
+    }
+    Write-Host ""
+    Write-Host "  Presiona ENTER para continuar..."
+    Read-Host
+}
+
+function Check-Integrity {
+    Show-Banner
+    Write-Host "  VERIFICANDO INTEGRIDAD DEL SCRIPT..." -ForegroundColor Red
+    Write-Host ""
+
+    $alerts = @()
+    $Hace2h = (Get-Date).AddMinutes(-120)
+
+    Write-Host "  [1/6] Verificando hash del script..." -ForegroundColor White
+    $currentHash = $null
+    try {
+        $currentHash = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash
+        if ($Global:ScriptHash -ne "NO_DISPONIBLE" -and $currentHash -ne $Global:ScriptHash) {
+            $alerts += "[HASH] El hash del script ha CAMBIADO (posible modificacion)"
+            Write-Host "      HASH ANTERIOR: $($Global:ScriptHash)" -ForegroundColor Red
+            Write-Host "      HASH ACTUAL:   $currentHash" -ForegroundColor Red
+            $Global:SelfDestructDetected = $true
+        } else {
+            Write-Host "      Hash verificado: $($currentHash.Substring(0,32))..." -ForegroundColor Green
+        }
+    } catch {
+        $alerts += "[HASH] No se pudo calcular el hash"
+    }
+
+    Write-Host "  [2/6] Verificando permisos y atributos..." -ForegroundColor White
+    try {
+        $acl = Get-Acl -Path $PSCommandPath -ErrorAction Stop
+        Write-Host "      Owner: $($acl.Owner)" -ForegroundColor White
+        $attrs = (Get-Item -Path $PSCommandPath -Force).Attributes.ToString()
+        if ($attrs -match "ReadOnly|Hidden|System") {
+            $alerts += "[ATRIBUTOS] Atributos sospechosos: $attrs"
+            Write-Host "      Atributos: $attrs (SOSPECHOSO)" -ForegroundColor Yellow
+        } else {
+            Write-Host "      Atributos: Normal" -ForegroundColor Green
+        }
+    } catch {
+        $alerts += "[PERMISOS] No se pudo leer ACL"
+    }
+
+    Write-Host "  [3/6] Verificando ubicacion en disco..." -ForegroundColor White
+    if (Test-Path $PSCommandPath) {
+        $fi = Get-Item -Path $PSCommandPath -Force
+        Write-Host "      Ruta: $($fi.FullName)" -ForegroundColor White
+        Write-Host "      Tamano: $($fi.Length) bytes" -ForegroundColor White
+        Write-Host "      Creado: $($fi.CreationTime)" -ForegroundColor White
+        Write-Host "      Modificado: $($fi.LastWriteTime)" -ForegroundColor White
+    } else {
+        $alerts += "[CRITICO] El script NO EXISTE en disco"
+    }
+
+    Write-Host "  [4/6] Buscando procesos con el script abierto..." -ForegroundColor White
+    try {
+        $handleMatch = & "cmd.exe" "/C handle.exe -a -p ""$PSCommandPath"" 2>nul" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $handleMatch) {
+            $alerts += "[HANDLE] Proceso(s) con el script abierto"
+            Write-Host "      $handleMatch" -ForegroundColor Yellow
+        } else {
+            Write-Host "      Sin handles activos" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "      No se pudo verificar handles (handle.exe no disponible)" -ForegroundColor DarkGray
+    }
+
+    Write-Host "  [5/6] Buscando scripts que referencien este archivo..." -ForegroundColor White
+    $suspiciousScripts = Get-ChildItem -Path "$env:TEMP" -Filter "*.ps1" -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt $Hace2h }
+    foreach ($s in $suspiciousScripts) {
+        try {
+            $content = Get-Content -Path $s.FullName -Raw -ErrorAction SilentlyContinue
+            if ($content -match [regex]::Escape($PSCommandPath) -and $content -match "Remove-Item|del|erase|delete") {
+                $alerts += "[SCRIPT HIJJO] Script en TEMP referenciando este archivo para eliminacion: $($s.Name)"
+                Write-Host "      $($s.FullName)" -ForegroundColor Red
+            }
+        } catch {}
+    }
+
+    Write-Host "  [6/6] Verificando tareas programadas maliciosas..." -ForegroundColor White
+    try {
+        $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+            $_.TaskPath -match "Temp|Startup|User_Feed_Synchronization" -or
+            ($_.Actions -match "del|erase|cleanup|destroy|self")
+        }
+        foreach ($t in $tasks) {
+            $alerts += "[TASK] Tarea sospechosa: $($t.TaskName)"
+            Write-Host "      $($t.TaskName) - $($t.TaskPath)" -ForegroundColor Yellow
+        }
+    } catch {}
+
+    Write-Host ""
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host "  RESUMEN DE INTEGRIDAD" -ForegroundColor White
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host ""
+
+    if ($alerts.Count -gt 0) {
+        Write-Host "  [!] $($alerts.Count) alertas encontradas:" -ForegroundColor Red
+        foreach ($a in $alerts) {
+            Write-Host "  $a"
         }
     } else {
-        Write-Host "  NO SE ENCONTRARON EJECUCIONES EN LOS ULTIMOS 30 MIN" -ForegroundColor Yellow
+        Write-Host "  Script integro y sin compromisos." -ForegroundColor Green
     }
-    
+
     Write-Host ""
-    Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
+    Write-Host "  Presiona ENTER para continuar..."
     Read-Host
 }
 
 function Detect-InjectionHooks {
     Show-Banner
-    Write-Host "  DETECTANDO HOOKS DE INYECCION (ULTIMOS 30 MIN)..." -ForegroundColor Red
+    Write-Host "  DETECTANDO HOOKS DE INYECCION (ULTIMAS 2 HORAS)..." -ForegroundColor Red
     Write-Host ""
-    
+
     $HooksDetectados = @()
-    $Hace30Min = (Get-Date).AddMinutes(-30)
-    
+    $Hace2h = (Get-Date).AddMinutes(-120)
+
     Write-Host "  [1/6] Buscando procesos sospechosos..." -ForegroundColor White
-    $ProcesosSospechosos = Get-Process | Where-Object {
-        $_.ProcessName -match "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector"
-    }
-    
+    $suspiciousPattern = "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector|selfdestruct|self.destruct"
+    $ProcesosSospechosos = Get-Process | Where-Object { $_.ProcessName -match $suspiciousPattern }
     foreach ($proc in $ProcesosSospechosos) {
-        Try {
+        $timeInfo = ""
+        try {
             $startTime = $proc.StartTime
-            if ($startTime -and $startTime -gt $Hace30Min) {
-                Write-Host "      - $($proc.ProcessName) (PID: $($proc.Id)) - Iniciado: $startTime" -ForegroundColor Yellow
-                $HooksDetectados += "[PROCESO] $($proc.ProcessName) - $($proc.Path) - Iniciado: $startTime"
-            }
-        } Catch {
-            Write-Host "      - $($proc.ProcessName) (PID: $($proc.Id))" -ForegroundColor Yellow
-            $HooksDetectados += "[PROCESO] $($proc.ProcessName) - $($proc.Path)"
-        }
+            if ($startTime -gt $Hace2h) { $timeInfo = " - Iniciado: $startTime" }
+        } catch {}
+        Write-Host "      - $($proc.ProcessName) (PID: $($proc.Id))$timeInfo" -ForegroundColor Yellow
+        $HooksDetectados += "[PROCESO] $($proc.ProcessName) - $($proc.Id)$timeInfo"
     }
-    
-    Write-Host ""
+
     Write-Host "  [2/6] Verificando inyeccion de DLLs..." -ForegroundColor White
-    $Modules = Get-Process | Where-Object { $_.ProcessName -match "java|minecraft" } | ForEach-Object {
-        Try {
-            $_.Modules | Where-Object {
-                $_.ModuleName -match "vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector"
+    $javaProcs = Get-Process -Name "java" -ErrorAction SilentlyContinue
+    $minecraftProcs = Get-Process | Where-Object { $_.ProcessName -match "minecraft|javaw" }
+    $targetProcs = $javaProcs + $minecraftProcs
+
+    foreach ($proc in $targetProcs) {
+        try {
+            $modules = $proc.Modules | Where-Object {
+                $_.ModuleName -match "vape|rise|flux|tenacity|novoline|astral|inject|hook|loader|cheat|hack|client|mod"
             }
-        } Catch {}
-    }
-    
-    foreach ($mod in $Modules) {
-        Write-Host "      - DLL inyectada: $($mod.ModuleName)" -ForegroundColor Red
-        $HooksDetectados += "[DLL INYECTADA] $($mod.ModuleName) - $($mod.FileName)"
-    }
-    
-    Write-Host ""
-    Write-Host "  [3/6] Verificando hooks en Java..." -ForegroundColor White
-    $JavaProcesses = Get-Process -Name java -ErrorAction SilentlyContinue
-    foreach ($proc in $JavaProcesses) {
-        Try {
-            $Modules = $proc.Modules | Where-Object { $_.ModuleName -match "hook|inject|loader" }
-            foreach ($mod in $Modules) {
-                Write-Host "      - Hook detectado: $($mod.ModuleName)" -ForegroundColor Red
-                $HooksDetectados += "[HOOK] $($mod.ModuleName) - $($mod.FileName)"
+            foreach ($mod in $modules) {
+                Write-Host "      - DLL inyectada en $($proc.ProcessName): $($mod.ModuleName)" -ForegroundColor Red
+                $HooksDetectados += "[DLL INYECTADA] $($mod.ModuleName) en $($proc.ProcessName)"
             }
-        } Catch {}
+        } catch {}
     }
-    
-    Write-Host ""
-    Write-Host "  [4/6] Buscando archivos de inyeccion recientes..." -ForegroundColor White
+
+    Write-Host "  [3/6] Buscando archivos de inyeccion recientes..." -ForegroundColor White
     $InjectionFiles = @()
-    $Paths = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\Documents", "$env:USERPROFILE\AppData\Roaming\.minecraft")
-    $Keywords = @("inject", "hook", "loader", "patcher", "bypass", "cheat", "hack", "vape", "rise", "flux", "tenacity", "novoline", "astral")
-    
+    $Paths = @(
+        "$env:USERPROFILE\Desktop",
+        "$env:USERPROFILE\Downloads",
+        "$env:USERPROFILE\Documents",
+        "$env:USERPROFILE\AppData\Roaming\.minecraft",
+        "$env:LOCALAPPDATA\VirtualStore"
+    )
+    $Keywords = @("inject", "hook", "loader", "patcher", "bypass", "cheat", "hack", "vape", "rise", "flux", "selfdestruct", "cleanup", "wipe")
+
     foreach ($p in $Paths) {
         if (Test-Path $p) {
             $InjectionFiles += Get-ChildItem -Path $p -Recurse -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -match ($Keywords -join "|") -and $_.LastWriteTime -gt $Hace30Min
+                $_.Name -match ($Keywords -join "|") -and $_.LastWriteTime -gt $Hace2h
             } | ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
         }
     }
-    
-    foreach ($file in $InjectionFiles) {
-        Write-Host "      - $file" -ForegroundColor Yellow
-        $HooksDetectados += "[ARCHIVO SOSPECHOSO] $file"
+
+    if (@($InjectionFiles).Count -gt 0) {
+        foreach ($file in $InjectionFiles) {
+            Write-Host "      - $file" -ForegroundColor Yellow
+            $HooksDetectados += "[ARCHIVO] $file"
+        }
     }
-    
-    Write-Host ""
+
+    Write-Host "  [4/6] Verificando hooks de API (Detours, MinHook)..." -ForegroundColor White
+    try {
+        $loadedDlls = Get-Process | ForEach-Object {
+            try { $_.Modules } catch {}
+        } | Where-Object { $_ -and $_.ModuleName -match "detours|minhook|easyhook|mhook|hook" }
+        foreach ($dll in $loadedDlls) {
+            Write-Host "      - Hook DLL detectada: $($dll.ModuleName) en proceso $($dll.ProcessName)" -ForegroundColor Red
+            $HooksDetectados += "[HOOK DLL] $($dll.ModuleName) en $($dll.ProcessName)"
+        }
+    } catch {}
+
     Write-Host "  [5/6] Verificando registro de Windows..." -ForegroundColor White
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
         "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run",
         "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
     )
-    
     foreach ($reg in $RegPaths) {
         if (Test-Path $reg) {
             $RegItems = Get-ItemProperty -Path $reg -ErrorAction SilentlyContinue
             foreach ($item in $RegItems.PSObject.Properties) {
                 if ($item.Name -notmatch "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider") {
                     $value = $item.Value
-                    if ($value -match "inject|hook|loader|cheat|hack|vape|rise|flux") {
-                        Write-Host "      - Registro: $($item.Name) = $value" -ForegroundColor Red
+                    if ($value -match "inject|hook|loader|cheat|hack|vape|rise|flux|self|cleanup|wipe") {
+                        Write-Host "      - [$reg] $($item.Name) = $value" -ForegroundColor Red
                         $HooksDetectados += "[REGISTRO] $($item.Name) = $value"
                     }
                 }
             }
         }
     }
-    
-    Write-Host ""
-    Write-Host "  [6/6] Verificando hooks clasicos de inyeccion..." -ForegroundColor White
-    $HooksClasicos = @(
-        "Thread",
-        "Hook DoPrivileged",
-        "Hook GetSystemPackage",
-        "Hook IsInterrupted",
-        "Hook IsThreadAlive",
-        "Hook MonitorWait",
-        "Hook MonitorNotify",
-        "Hook Sleep"
-    )
-    
-    foreach ($hook in $HooksClasicos) {
-        Write-Host "      - Verificando: $hook" -ForegroundColor Gray
-        # Simulacion de deteccion (en la practica se revisarian procesos/memoria)
-    }
-    
+
+    Write-Host "  [6/6] Verificando Scheduled Tasks para inyeccion persistente..." -ForegroundColor White
+    try {
+        $suspTasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+            $_.Actions -match "inject|hook|loader|cheat|vape|self.destruct|cleanup|wipe|destroy"
+        }
+        foreach ($t in $suspTasks) {
+            Write-Host "      - Tarea: $($t.TaskName)" -ForegroundColor Red
+            $HooksDetectados += "[TASK] $($t.TaskName)"
+        }
+    } catch {}
+
     Write-Host ""
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host "  RESUMEN DE HOOKS DETECTADOS: $($HooksDetectados.Count)" -ForegroundColor White
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host ""
-    
+
     if ($HooksDetectados.Count -gt 0) {
-        Write-Host "  ¡SE DETECTARON POSIBLES HOOKS DE INYECCION!" -ForegroundColor Red
+        Write-Host "  [!] SE DETECTARON POSIBLES HOOKS DE INYECCION" -ForegroundColor Red
         Write-Host ""
         foreach ($hook in $HooksDetectados) {
-            Write-Host "  $hook" -ForegroundColor White
+            Write-Host "  $hook"
         }
     } else {
-        Write-Host "  NO SE DETECTARON HOOKS DE INYECCION EN LOS ULTIMOS 30 MIN" -ForegroundColor Green
+        Write-Host "  NO SE DETECTARON HOOKS DE INYECCION EN LAS ULTIMAS 2 HORAS" -ForegroundColor Green
     }
-    
+
     Write-Host ""
-    Write-Host "  ¿Guardar resultados en TXT? (S/N)" -ForegroundColor Yellow
-    $resp = Read-Host
-    if ($resp -eq "S" -or $resp -eq "s") {
+    Write-Host "  Guardar en TXT? (S/N)" -ForegroundColor Yellow
+    if ((Read-Host).ToUpper() -eq "S") {
         $Desktop = [Environment]::GetFolderPath("Desktop")
         $Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
-        $HooksDetectados | Out-File -FilePath "$Desktop\Hooks_Detectados_$Fecha.txt" -Encoding UTF8
-        Write-Host "  Archivo guardado en el escritorio." -ForegroundColor Green
+        $HooksDetectados | Out-File -FilePath "$Desktop\AC-BQGE_Hooks_$Fecha.txt" -Encoding UTF8
+        Write-Host "  Guardado." -ForegroundColor Green
     }
-    
     Write-Host ""
-    Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
+    Write-Host "  Presiona ENTER para continuar..."
     Read-Host
 }
 
 function Search-All {
     Show-Banner
-    Write-Host "  ANALISIS COMPLETO (ULTIMOS 30 MIN)..." -ForegroundColor Red
+    Write-Host "  ANALISIS COMPLETO (TODO)..." -ForegroundColor Red
     Write-Host ""
-    
-    $Hace30Min = (Get-Date).AddMinutes(-30)
-    
-    Write-Host "  [1/6] Buscando .jar..." -ForegroundColor White
-    $Jars = @()
+
+    $Hace2h = (Get-Date).AddMinutes(-120)
+    $StartTime = Get-Date
+
+    Write-Host "  [1/6] Buscando .jar, .exe, .dll..." -ForegroundColor White
+    $Jars = @(); $Exes = @(); $Dlls = @()
     $Paths = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\AppData\Roaming\.minecraft")
     foreach ($p in $Paths) {
         if (Test-Path $p) {
-            $Jars += Get-ChildItem -Path $p -Filter *.jar -Recurse -ErrorAction SilentlyContinue | 
-                Where-Object { $_.LastWriteTime -gt $Hace30Min } |
-                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
+            $Jars += Get-ChildItem -Path $p -Filter *.jar -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $Hace2h } |
+                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime) - $($_.Length) bytes" }
+            $Exes += Get-ChildItem -Path $p -Filter *.exe -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $Hace2h } |
+                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime) - $($_.Length) bytes" }
+            $Dlls += Get-ChildItem -Path $p -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -gt $Hace2h } |
+                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime) - $($_.Length) bytes" }
         }
     }
-    Write-Host "        Encontrados: $($Jars.Count)" -ForegroundColor Green
-    
-    Write-Host "  [2/6] Buscando .exe..." -ForegroundColor White
-    $Exes = @()
-    foreach ($p in $Paths) {
-        if (Test-Path $p) {
-            $Exes += Get-ChildItem -Path $p -Filter *.exe -Recurse -ErrorAction SilentlyContinue | 
-                Where-Object { $_.LastWriteTime -gt $Hace30Min } |
-                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
-        }
+    Write-Host "        JAR: $($Jars.Count) | EXE: $($Exes.Count) | DLL: $($Dlls.Count)" -ForegroundColor Green
+
+    Write-Host "  [2/6] Buscando eliminados..." -ForegroundColor White
+    $Deleted = @()
+    $usnFile = "$env:TEMP\usn_full.txt"
+    cmd /c "fsutil usn readjournal c: csv > $usnFile" 2>$null
+    if (Test-Path $usnFile) {
+        $raw = Get-Content $usnFile -TotalCount 50000 -ErrorAction SilentlyContinue
+        $Deleted = $raw | Select-String -Pattern '\.(exe|dll|jar|ps1|bat|vbs)' | Select-String -Pattern '0x80000200|0x80000000'
+        Remove-Item $usnFile -Force -ErrorAction SilentlyContinue
     }
-    Write-Host "        Encontrados: $($Exes.Count)" -ForegroundColor Green
-    
-    Write-Host "  [3/6] Buscando .dll..." -ForegroundColor White
-    $Dlls = @()
-    foreach ($p in $Paths) {
-        if (Test-Path $p) {
-            $Dlls += Get-ChildItem -Path $p -Filter *.dll -Recurse -ErrorAction SilentlyContinue | 
-                Where-Object { $_.LastWriteTime -gt $Hace30Min } |
-                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
-        }
-    }
-    Write-Host "        Encontrados: $($Dlls.Count)" -ForegroundColor Green
-    
-    Write-Host "  [4/6] Buscando eliminados..." -ForegroundColor White
-    $Deleted = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
-    $Deleted += cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
-    $Deleted += cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.jar` | findstr /i /c:`"0x80000200`"" 2>$null
-    Write-Host "        Encontrados: $($Deleted.Count)" -ForegroundColor Green
-    
-    Write-Host "  [5/6] Buscando en Papelera..." -ForegroundColor White
-    $PapeleraItems = @()
-    Try {
+    Write-Host "        Eliminados: $($Deleted.Count)" -ForegroundColor Green
+
+    Write-Host "  [3/6] Analizando papelera..." -ForegroundColor White
+    $Recycled = @()
+    try {
         $shell = New-Object -ComObject Shell.Application
-        $recycle = $shell.Namespace(0xA)
-        $recycle.Items() | ForEach-Object {
-            if ($_.Name -match '\.exe$|\.dll$|\.jar$') {
-                $PapeleraItems += "$($_.Name) - Eliminado: $($_.ModifyDate)"
+        $recycleBin = $shell.NameSpace(0xa)
+        foreach ($item in $recycleBin.Items()) {
+            if ($item.Name -match '\.(exe|dll|jar|ps1|bat|vbs|scr|com)') {
+                $Recycled += "$($item.Name) - Origen: $(try { $item.ExtendedProperty("System.Recycle.OriginalLocation") } catch { "?" })"
             }
         }
-    } Catch {}
-    Write-Host "        Encontrados en Papelera: $($PapeleraItems.Count)" -ForegroundColor Green
-    
-    Write-Host "  [6/6] Detectando hooks de inyeccion..." -ForegroundColor White
-    $Hooks = @()
-    $ProcesosSospechosos = Get-Process | Where-Object {
-        $_.ProcessName -match "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector"
-    }
-    foreach ($proc in $ProcesosSospechosos) {
-        $Hooks += "[PROCESO] $($proc.ProcessName) - $($proc.Path)"
-    }
-    Write-Host "        Hooks detectados: $($Hooks.Count)" -ForegroundColor Green
-    
-    Write-Host ""
-    Write-Host "  ========================================" -ForegroundColor Red
-    Write-Host "  RESUMEN (ULTIMOS 30 MIN):" -ForegroundColor White
-    Write-Host "    .jar: $($Jars.Count)" -ForegroundColor White
-    Write-Host "    .exe: $($Exes.Count)" -ForegroundColor White
-    Write-Host "    .dll: $($Dlls.Count)" -ForegroundColor White
-    Write-Host "    Eliminados: $($Deleted.Count)" -ForegroundColor White
-    Write-Host "    Papelera: $($PapeleraItems.Count)" -ForegroundColor White
-    Write-Host "    Hooks detectados: $($Hooks.Count)" -ForegroundColor Red
-    Write-Host "  ========================================" -ForegroundColor Red
-    Write-Host ""
-    
-    if ($Jars.Count -gt 0 -or $Exes.Count -gt 0 -or $Dlls.Count -gt 0 -or $Deleted.Count -gt 0 -or $Hooks.Count -gt 0) {
-        Write-Host "  ¿Guardar resultados en TXT? (S/N)" -ForegroundColor Yellow
-        $resp = Read-Host
-        if ($resp -eq "S" -or $resp -eq "s") {
-            $Desktop = [Environment]::GetFolderPath("Desktop")
-            $Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
-            $Jars | Out-File -FilePath "$Desktop\Jars_$Fecha.txt" -Encoding UTF8
-            $Exes | Out-File -FilePath "$Desktop\Exes_$Fecha.txt" -Encoding UTF8
-            $Dlls | Out-File -FilePath "$Desktop\Dlls_$Fecha.txt" -Encoding UTF8
-            $Deleted | Out-File -FilePath "$Desktop\Eliminados_$Fecha.txt" -Encoding UTF8
-            $PapeleraItems | Out-File -FilePath "$Desktop\Papelera_$Fecha.txt" -Encoding UTF8
-            $Hooks | Out-File -FilePath "$Desktop\Hooks_$Fecha.txt" -Encoding UTF8
-            Write-Host "  Archivos guardados en el escritorio." -ForegroundColor Green
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } catch {}
+    Write-Host "        En papelera: $($Recycled.Count)" -ForegroundColor Green
+
+    Write-Host "  [4/6] Extrayendo BAM..." -ForegroundColor White
+    $Bam = @()
+    $bamRoot = "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\"
+    $Users = Get-ChildItem -Path $bamRoot -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
+    foreach ($Sid in $Users) {
+        $BamItems = Get-ItemProperty -Path "$bamRoot$Sid" -ErrorAction SilentlyContinue
+        $User = try { (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate([System.Security.Principal.NTAccount]).Value } catch { "Sistema" }
+        foreach ($Item in $BamItems.PSObject.Properties) {
+            if ($Item.Name -match "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider") { continue }
+            $Key = $Item.Value
+            if ($Key.Length -ge 8) {
+                $Hex = [System.BitConverter]::ToString($Key[7..0]) -replace "-",""
+                $TimeUser = [DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))
+                if ($TimeUser -gt $Hace2h) {
+                    $path = $Item.Name -replace '\\Device\\HarddiskVolume\d+\\', 'C:\'
+                    $Bam += "[$($TimeUser.ToString('yyyy-MM-dd HH:mm:ss'))] $User - $path"
+                }
+            }
         }
     }
-    
+    Write-Host "        Ejecuciones BAM: $($Bam.Count)" -ForegroundColor Green
+
+    Write-Host "  [5/6] Detectando hooks de inyeccion..." -ForegroundColor White
+    $Hooks = @()
+    $ProcesosSospechosos = Get-Process | Where-Object {
+        $_.ProcessName -match "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector|selfdestruct|cleanup|wipe"
+    }
+    foreach ($proc in $ProcesosSospechosos) {
+        $Hooks += "[PROCESO] $($proc.ProcessName) - $($proc.Id)"
+    }
+    Write-Host "        Hooks: $($Hooks.Count)" -ForegroundColor Green
+
+    Write-Host "  [6/6] Self-Check integridad..." -ForegroundColor White
+    $beforeCheck = $Global:SelfDestructDetected
+    $null = Check-SelfDestruct
+    Write-Host "        Self-destruct: $(if ($Global:SelfDestructDetected) { "DETECTADO!" } else { "OK" })" 
+
+    $Elapsed = (Get-Date) - $StartTime
     Write-Host ""
-    Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host "  RESUMEN COMPLETO (Tiempo: $($Elapsed.TotalSeconds.ToString('F1'))s):" -ForegroundColor White
+    Write-Host "    .jar: $($Jars.Count) | .exe: $($Exes.Count) | .dll: $($Dlls.Count)" -ForegroundColor White
+    Write-Host "    Eliminados (USN): $($Deleted.Count)" -ForegroundColor White
+    Write-Host "    Papelera: $($Recycled.Count)" -ForegroundColor White
+    Write-Host "    BAM (ejecuciones): $($Bam.Count)" -ForegroundColor White
+    Write-Host "    Hooks de inyeccion: $($Hooks.Count)" -ForegroundColor Red
+    Write-Host "    Self-destruct: $(if ($Global:SelfDestructDetected) { "DETECTADO!" } else { "No detectado" })"
+    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host ""
+
+    Write-Host "  Guardar TODO en TXT? (S/N)" -ForegroundColor Yellow
+    if ((Read-Host).ToUpper() -eq "S") {
+        $Desktop = [Environment]::GetFolderPath("Desktop")
+        $Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
+@"
+AC-BQGE ENHANCED - REPORTE COMPLETO
+Fecha: $(Get-Date)
+Script: $PSCommandPath
+Self-destruct: $(if ($Global:SelfDestructDetected) { "DETECTADO" } else { "No detectado" })
+
+=== ARCHIVOS .JAR ===
+$($Jars -join "`n")
+
+=== ARCHIVOS .EXE ===
+$($Exes -join "`n")
+
+=== ARCHIVOS .DLL ===
+$($Dlls -join "`n")
+
+=== ELIMINADOS (USN) ===
+$($Deleted -join "`n")
+
+=== PAPELERA DE RECICLAJE ===
+$($Recycled -join "`n")
+
+=== BAM (EJECUCIONES) ===
+$($Bam -join "`n")
+
+=== HOOKS DE INYECCION ===
+$($Hooks -join "`n")
+"@ | Out-File -FilePath "$Desktop\AC-BQGE_Reporte_$Fecha.txt" -Encoding UTF8
+        Write-Host "  Reporte guardado en el escritorio." -ForegroundColor Green
+    }
+
+    Write-Host ""
+    Write-Host "  Presiona ENTER para continuar..."
     Read-Host
+}
+
+function Toggle-StealthMode {
+    if ($Global:ModoSigiloso) {
+        $Global:ModoSigiloso = $false
+        $Global:LogFile = $null
+        Write-Host "  Modo sigiloso DESACTIVADO" -ForegroundColor Yellow
+    } else {
+        $Global:ModoSigiloso = $true
+        $Desktop = [Environment]::GetFolderPath("Desktop")
+        $Global:LogFile = "$Desktop\AC-BQGE_ModoSigiloso_$(Get-Date -Format 'yyyy-MM-dd_HH-mm').log"
+        Write-Host "  Modo sigiloso ACTIVADO - Output en: $($Global:LogFile)" -ForegroundColor Green
+    }
+    Start-Sleep 2
 }
 
 # ============================================
@@ -497,36 +831,44 @@ function Search-All {
 # ============================================
 if (!(Test-Admin)) {
     Write-Host "  EJECUTA ESTE SCRIPT COMO ADMINISTRADOR" -ForegroundColor Red
-    Start-Sleep 5
-    Exit
+    Write-Host "  Algunas funciones no funcionaran correctamente." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Presiona ENTER para continuar de todas formas..."
+    Read-Host
 }
+
+# Self-check inicial
+Check-SelfDestruct
 
 do {
     Show-Menu
     Write-Host "  Selecciona una opcion: " -ForegroundColor Yellow -NoNewLine
     $option = Read-Host
-    
+
     switch ($option) {
-        "1" { Search-Files -Extension "jar" -Name "JAR" }
-        "2" { Search-Files -Extension "exe" -Name "EXE" }
-        "3" { Search-Files -Extension "dll" -Name "DLL" }
-        "4" { 
-            Search-Files -Extension "jar" -Name "JAR"
-            Search-Files -Extension "exe" -Name "EXE"
-            Search-Files -Extension "dll" -Name "DLL"
+        "1" { Search-Files -Extension "jar" }
+        "2" { Search-Files -Extension "exe" }
+        "3" { Search-Files -Extension "dll" }
+        "4" {
+            Search-Files -Extension "jar"
+            Search-Files -Extension "exe"
+            Search-Files -Extension "dll"
         }
         "5" { Search-Deleted }
         "6" { Search-BAM }
         "7" { Detect-InjectionHooks }
-        "8" { Search-All }
-        "9" { 
+        "8" { Check-RecycleBin }
+        "9" { Check-SelfDestruct }
+        "10" { Search-All }
+        "11" { Check-Integrity }
+        "12" { Toggle-StealthMode }
+        "13" {
             Show-Banner
             Write-Host "  ========================================" -ForegroundColor Red
-            Write-Host "     GRACIAS POR USAR AC-BQGE" -ForegroundColor White
+            Write-Host "     GRACIAS POR USAR AC-BQGE ENHANCED" -ForegroundColor White
             Write-Host "  ========================================" -ForegroundColor Red
             Write-Host ""
-            Write-Host "  [!] Backup del script guardado en: $Global:BackupPath" -ForegroundColor Green
-            Start-Sleep 3
+            Start-Sleep 2
             Exit
         }
         default {
