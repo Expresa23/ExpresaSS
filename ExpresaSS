@@ -1,28 +1,9 @@
 $ErrorActionPreference = "SilentlyContinue"
 
-function Get-Signature {
-    [CmdletBinding()]
-    param ([string[]]$FilePath)
-    $Existence = Test-Path -PathType "Leaf" -Path $FilePath
-    $Authenticode = (Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction SilentlyContinue).Status
-    $Signature = "Invalid Signature (UnknownError)"
-    if ($Existence) {
-        if ($Authenticode -eq "Valid") { $Signature = "Firma Valida" }
-        elseif ($Authenticode -eq "NotSigned") { $Signature = "Firma Invalida (No esta firmado)" }
-        elseif ($Authenticode -eq "HashMismatch") { $Signature = "Firma Invalida (HashMismatch)" }
-        elseif ($Authenticode -eq "NotTrusted") { $Signature = "Firma Invalida (NotTrusted)" }
-        elseif ($Authenticode -eq "UnknownError") { $Signature = "Firma Invalida (UnknownError)" }
-        return $Signature
-    } else {
-        $Signature = "El archivo no fue encontrado"
-        return $Signature
-    }
-}
-
 Clear-Host
 Write-Host ""
-Write-Host -ForegroundColor Red "Analisis Avanzado"
-Write-Host -ForegroundColor Yellow " Buscando: Hacks, Cheats, Injectables, Malware"
+Write-Host -ForegroundColor Red "Buscador de chetos"
+Write-Host -ForegroundColor Yellow " Buscando: Clientes, Cheats, Injectables, Utilidades"
 Write-Host -ForegroundColor Green " Expresa - Paraguayito"
 Write-Host ""
 
@@ -40,37 +21,19 @@ if (!(Test-Admin)) {
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
 $Desktop = [Environment]::GetFolderPath("Desktop")
-$Folder = Join-Path $Desktop "RESULTADOS"
+$Folder = Join-Path $Desktop "CHEATS_ENCONTRADOS"
 if (!(Test-Path $Folder)) { New-Item -ItemType Directory -Path $Folder -Force | Out-Null }
 
+# Palabras clave de cheats de Minecraft
 $Keywords = @(
-    "cheat", "hack", "injector", "inject", "dump", "hook", "crack", "load"
-    "dll", "exe", "bypass", "vac", "esp", "aim", "wall", "trigger", "silent"
-    "fov", "chams", "glow", "bhop", "antiaim", "rage", "legit", "hvh"
-    "phoenix", "scorpion", "astral", "lunar", "cloud", "chill", "cotton", "flux"
-    "fatal", "inertia", "koid", "novoline", "rise", "skye", "snow", "spook"
-    "tap", "tenacity", "vape", "kronos", "lucid", "raze", "sumo", "trig"
-    "unban", "crack", "bypass", "bhop", "packet", "ghost", "exelon"
-    "inject", "loader", "patcher", "offline", "spoofer", "serial"
-    "fk", "fly", "anti", "rekt", "exploit", "xray", "radar"
+    "lunar", "badlion", "vape", "rise", "flux", "tenacity", "novoline", "astral"
+    "scorpion", "phoenix", "cloud", "chill", "cotton", "fatal", "inertia", "koid"
+    "skye", "snow", "spook", "tap", "sumo", "raze", "kronos", "lucid"
+    "exelon", "ghost", "trig", "hvh", "bhop", "fly", "anti", "aimbot"
+    "esp", "wall", "glow", "chams", "silent", "trigger", "radar", "xray"
+    "spoofer", "serial", "inject", "loader", "patcher", "crack", "bypass"
+    "minecraft", "client", "utility", "mod", "cheat", "hack", "injector"
 )
-
-$ExcludePaths = @(
-    "C:\Windows\", "C:\Windows\System32\", "C:\Windows\SysWOW64\",
-    "C:\Program Files\", "C:\Program Files (x86)\",
-    "C:\Windows\WinSxS\", "C:\Windows\Microsoft.NET\",
-    "C:\Windows\assembly\", "C:\Windows\servicing\",
-    "C:\Windows\Installer\", "C:\Windows\SystemApps\",
-    "C:\$Recycle.Bin\", "C:\System Volume Information\"
-)
-
-function Is-ExcludedPath {
-    param([string]$Path)
-    foreach ($excl in $ExcludePaths) {
-        if ($Path -like "$excl*") { return $true }
-    }
-    return $false
-}
 
 function Is-Suspicious {
     param([string]$Path)
@@ -81,188 +44,116 @@ function Is-Suspicious {
     return $false
 }
 
-Write-Host "[1/7] Buscando archivos .exe y .dll sospechosos..." -ForegroundColor Green
+# ============================================
+# 1. BUSCAR ARCHIVOS .exe .dll .jar
+# ============================================
+Write-Host "[1/4] Buscando archivos sospechosos..." -ForegroundColor Green
 $Sospechosos = @()
-$Archivos = Get-ChildItem -Path C:\ -Include *.exe,*.dll -Recurse -ErrorAction SilentlyContinue
+$Archivos = Get-ChildItem -Path "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\Documents", "$env:USERPROFILE\AppData" -Include *.exe,*.dll,*.jar -Recurse -ErrorAction SilentlyContinue
 foreach ($archivo in $Archivos) {
     if (Is-Suspicious -Path $archivo.FullName) {
         $Sospechosos += [PSCustomObject]@{
             'Archivo' = $archivo.FullName
-            'Nombre' = $archivo.Name
             'Extension' = $archivo.Extension
             'Tamaño_KB' = [math]::Round($archivo.Length / 1KB, 2)
-            'Creado' = $archivo.CreationTime
             'Modificado' = $archivo.LastWriteTime
-            'Firma' = Get-Signature -FilePath $archivo.FullName
         }
     }
 }
-$SospechososLog = Join-Path $Folder "1_Archivos_Sospechosos.txt"
-$Sospechosos | Format-Table -AutoSize | Out-String | Out-File -FilePath $SospechososLog -Encoding UTF8
+$Sospechosos | Format-Table -AutoSize | Out-String | Out-File -FilePath (Join-Path $Folder "1_Archivos_Sospechosos.txt") -Encoding UTF8
 Write-Host "   Encontrados: $($Sospechosos.Count)" -ForegroundColor Cyan
 
-Write-Host "[2/7] Extrayendo BAM (Ultimos ejecutados)..." -ForegroundColor Green
+# ============================================
+# 2. BAM - ULTIMOS EJECUTADOS
+# ============================================
+Write-Host "[2/4] Extrayendo BAM..." -ForegroundColor Green
 if (!(Get-PSDrive -Name HKLM -PSProvider Registry)){
     Try{New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE}
-    Catch{Write-Warning "Error montando HKEY_Local_Machine"}
+    Catch{}
 }
-$bv = ("bam", "bam\State")
-Try{$Users = foreach($ii in $bv){Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($ii)\UserSettings\" | Select-Object -ExpandProperty PSChildName}}
-Catch{ $Users = @() }
-
-$rpath = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\","HKLM:\SYSTEM\CurrentControlSet\Services\bam\state\")
-$UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
-
 $Bam = @()
-foreach ($Sid in $Users) {
-    foreach($rp in $rpath) {
-        $BamItems = Get-Item -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
+Try {
+    $Users = Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\" | Select-Object -ExpandProperty PSChildName
+    $UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
+    foreach ($Sid in $Users) {
+        $BamItems = Get-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
         Try { $User = (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate([System.Security.Principal.NTAccount]).Value }
         Catch { $User = "Sistema" }
         foreach ($Item in $BamItems) {
-            $Key = Get-ItemProperty -Path "$($rp)UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $Item
+            $Key = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$Sid" | Select-Object -ExpandProperty $Item
             if ($Key.Length -eq 24) {
                 $Hex = [System.BitConverter]::ToString($key[7..0]) -replace "-",""
                 $TimeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).AddMinutes(-([convert]::ToInt32([Convert]::ToString($UserBias,2),2))/60) -Format "yyyy-MM-dd HH:mm:ss")
                 $path = $Item -replace "\\Device\\HarddiskVolume\d+\\", "C:\"
                 if (Is-Suspicious -Path $path) {
-                    $Bam += [PSCustomObject]@{
-                        'Tiempo' = $TimeUser
-                        'Archivo' = $path
-                        'Usuario' = $User
-                        'SID' = $Sid
-                        'Firma' = Get-Signature -FilePath $path
-                    }
+                    $Bam += [PSCustomObject]@{ 'Tiempo' = $TimeUser; 'Archivo' = $path; 'Usuario' = $User }
                 }
             }
         }
     }
-}
-$BamLog = Join-Path $Folder "2_BAM_Ejecutados.txt"
-$Bam | Format-Table -AutoSize | Out-String | Out-File -FilePath $BamLog -Encoding UTF8
-Write-Host "   Encontrados en BAM: $($Bam.Count)" -ForegroundColor Cyan
+} Catch {}
+$Bam | Format-Table -AutoSize | Out-String | Out-File -FilePath (Join-Path $Folder "2_BAM_Ejecutados.txt") -Encoding UTF8
+Write-Host "   Encontrados: $($Bam.Count)" -ForegroundColor Cyan
 
-Write-Host "[3/7] Buscando procesos activos sospechosos..." -ForegroundColor Green
+# ============================================
+# 3. PROCESOS ACTIVOS
+# ============================================
+Write-Host "[3/4] Buscando procesos activos..." -ForegroundColor Green
 $Procesos = @()
 $ProcesosActivos = Get-Process | Where-Object { $_.Path -and (Is-Suspicious -Path $_.Path) }
 foreach ($proc in $ProcesosActivos) {
-    $Procesos += [PSCustomObject]@{
-        'Proceso' = $proc.ProcessName
-        'PID' = $proc.Id
-        'Ruta' = $proc.Path
-        'Firma' = Get-Signature -FilePath $proc.Path
-    }
+    $Procesos += [PSCustomObject]@{ 'Proceso' = $proc.ProcessName; 'PID' = $proc.Id; 'Ruta' = $proc.Path }
 }
-$ProcesosLog = Join-Path $Folder "3_Procesos_Activos.txt"
-$Procesos | Format-Table -AutoSize | Out-String | Out-File -FilePath $ProcesosLog -Encoding UTF8
+$Procesos | Format-Table -AutoSize | Out-String | Out-File -FilePath (Join-Path $Folder "3_Procesos_Activos.txt") -Encoding UTF8
 Write-Host "   Procesos sospechosos: $($Procesos.Count)" -ForegroundColor Cyan
 
-Write-Host "[4/7] Buscando servicios sospechosos..." -ForegroundColor Green
-$Servicios = @()
-$ServiciosActivos = Get-Service | Where-Object { (Is-Suspicious -Path $_.DisplayName) -or (Is-Suspicious -Path $_.ServiceName) }
-foreach ($svc in $ServiciosActivos) {
-    $Servicios += [PSCustomObject]@{
-        'Nombre' = $svc.ServiceName
-        'DisplayName' = $svc.DisplayName
-        'Estado' = $svc.Status
-        'Tipo' = $svc.StartType
-    }
-}
-$ServiciosLog = Join-Path $Folder "4_Servicios_Sospechosos.txt"
-$Servicios | Format-Table -AutoSize | Out-String | Out-File -FilePath $ServiciosLog -Encoding UTF8
-Write-Host "   Servicios sospechosos: $($Servicios.Count)" -ForegroundColor Cyan
-
-Write-Host "[5/7] Buscando tareas programadas sospechosas..." -ForegroundColor Green
-$Tareas = @()
-$TareasActivas = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { (Is-Suspicious -Path $_.TaskName) -or (Is-Suspicious -Path $_.Description) }
-foreach ($tarea in $TareasActivas) {
-    $Tareas += [PSCustomObject]@{
-        'Nombre' = $tarea.TaskName
-        'Descripcion' = $tarea.Description
-        'Estado' = $tarea.State
-        'Ruta' = $tarea.TaskPath
-    }
-}
-$TareasLog = Join-Path $Folder "5_Tareas_Programadas.txt"
-$Tareas | Format-Table -AutoSize | Out-String | Out-File -FilePath $TareasLog -Encoding UTF8
-Write-Host "   Tareas sospechosas: $($Tareas.Count)" -ForegroundColor Cyan
-
-Write-Host "[6/7] Buscando archivos eliminados sospechosos..." -ForegroundColor Green
+# ============================================
+# 4. ELIMINADOS (USN Journal)
+# ============================================
+Write-Host "[4/4] Buscando archivos eliminados..." -ForegroundColor Green
 $Eliminados = @()
-$exesDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
-$dllsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
-$todosDel = $exesDel + $dllsDel
+$todosDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
+$todosDel += cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
+$todosDel += cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.jar` | findstr /i /c:`"0x80000200`"" 2>$null
 foreach ($linea in $todosDel) {
     if ($linea -match "ERROR" -or $linea -eq "") { continue }
     $path = $linea.Trim()
-    if (Is-Suspicious -Path $path) {
-        $Eliminados += $path
-    }
+    if (Is-Suspicious -Path $path) { $Eliminados += $path }
 }
-$EliminadosLog = Join-Path $Folder "6_Archivos_Eliminados.txt"
-$Eliminados | Out-File -FilePath $EliminadosLog -Encoding UTF8
+$Eliminados | Out-File -FilePath (Join-Path $Folder "4_Archivos_Eliminados.txt") -Encoding UTF8
 Write-Host "   Eliminados sospechosos: $($Eliminados.Count)" -ForegroundColor Cyan
 
-Write-Host "[7/7] Buscando eventos de ejecucion sospechosos..." -ForegroundColor Green
-$EventosLog = Join-Path $Folder "7_Eventos_Ejecucion.txt"
-$EventosEncontrados = @()
-Try {
-    $Eventos = Get-WinEvent -FilterHashtable @{
-        LogName='Security'
-        ID=4688
-        StartTime=(Get-Date).AddMinutes(-10)
-    } -ErrorAction SilentlyContinue
-    foreach ($Evento in $Eventos) {
-        $Proceso = $Evento.Properties[8].Value
-        if (Is-Suspicious -Path $Proceso) {
-            $EventosEncontrados += "$($Evento.TimeCreated) - $($Evento.Properties[1].Value) ejecuto: $Proceso"
-        }
-    }
-} Catch {}
-$EventosEncontrados | Out-File -FilePath $EventosLog -Encoding UTF8
-Write-Host "   Eventos sospechosos: $($EventosEncontrados.Count)" -ForegroundColor Cyan
-
+# ============================================
+# RESUMEN
+# ============================================
 $ResumenLog = Join-Path $Folder "0_Resumen_Completo.txt"
 $Resumen = @"
 ========================================
-    FORENSIC HUNTER - ANALISIS COMPLETO
+    MINECRAFT CHEAT HUNTER
 ========================================
 Fecha: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 Equipo: $env:COMPUTERNAME
 Usuario: $env:USERNAME
-Carpeta: $Folder
 ========================================
 
-[1] ARCHIVOS SOSPECHOSOS EN DISCO: $($Sospechosos.Count)
+[1] ARCHIVOS SOSPECHOSOS: $($Sospechosos.Count)
 ----------------------------------------
 $($Sospechosos | Format-Table -AutoSize | Out-String)
 
-[2] BAM - EJECUTADOS SOSPECHOSOS: $($Bam.Count)
+[2] BAM - EJECUTADOS: $($Bam.Count)
 ----------------------------------------
 $($Bam | Format-Table -AutoSize | Out-String)
 
-[3] PROCESOS ACTIVOS SOSPECHOSOS: $($Procesos.Count)
+[3] PROCESOS ACTIVOS: $($Procesos.Count)
 ----------------------------------------
 $($Procesos | Format-Table -AutoSize | Out-String)
 
-[4] SERVICIOS SOSPECHOSOS: $($Servicios.Count)
-----------------------------------------
-$($Servicios | Format-Table -AutoSize | Out-String)
-
-[5] TAREAS PROGRAMADAS SOSPECHOSAS: $($Tareas.Count)
-----------------------------------------
-$($Tareas | Format-Table -AutoSize | Out-String)
-
-[6] ARCHIVOS ELIMINADOS SOSPECHOSOS: $($Eliminados.Count)
+[4] ARCHIVOS ELIMINADOS: $($Eliminados.Count)
 ----------------------------------------
 $($Eliminados -join "`n")
 
-[7] EVENTOS DE EJECUCION SOSPECHOSOS: $($EventosEncontrados.Count)
-----------------------------------------
-$($EventosEncontrados -join "`n")
-
 ========================================
-FIN DEL ANALISIS
+FIN
 ========================================
 "@
 $Resumen | Out-File -FilePath $ResumenLog -Encoding UTF8
@@ -277,10 +168,7 @@ Write-Host "Resumen:" -ForegroundColor Green
 Write-Host "  - Archivos sospechosos: $($Sospechosos.Count)" -ForegroundColor White
 Write-Host "  - Ejecutados (BAM): $($Bam.Count)" -ForegroundColor White
 Write-Host "  - Procesos activos: $($Procesos.Count)" -ForegroundColor White
-Write-Host "  - Servicios: $($Servicios.Count)" -ForegroundColor White
-Write-Host "  - Tareas programadas: $($Tareas.Count)" -ForegroundColor White
 Write-Host "  - Eliminados: $($Eliminados.Count)" -ForegroundColor White
-Write-Host "  - Eventos (ultimos 10 min): $($EventosEncontrados.Count)" -ForegroundColor White
 Write-Host ""
 Write-Host "Tiempo: $t Minutos" -ForegroundColor Yellow
 Write-Host ""
