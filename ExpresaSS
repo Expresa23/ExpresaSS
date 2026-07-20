@@ -1,24 +1,5 @@
 $ErrorActionPreference = "SilentlyContinue"
 
-function Get-Signature {
-    [CmdletBinding()]
-    param ([string[]]$FilePath)
-    $Existence = Test-Path -PathType "Leaf" -Path $FilePath
-    $Authenticode = (Get-AuthenticodeSignature -FilePath $FilePath -ErrorAction SilentlyContinue).Status
-    $Signature = "Invalid Signature (UnknownError)"
-    if ($Existence) {
-        if ($Authenticode -eq "Valid") { $Signature = "Firma Valida" }
-        elseif ($Authenticode -eq "NotSigned") { $Signature = "Firma Invalida (No esta firmado)" }
-        elseif ($Authenticode -eq "HashMismatch") { $Signature = "Firma Invalida (HashMismatch)" }
-        elseif ($Authenticode -eq "NotTrusted") { $Signature = "Firma Invalida (NotTrusted)" }
-        elseif ($Authenticode -eq "UnknownError") { $Signature = "Firma Invalida (UnknownError)" }
-        return $Signature
-    } else {
-        $Signature = "El archivo no fue encontrado"
-        return $Signature
-    }
-}
-
 Clear-Host
 Write-Host ""
 Write-Host -ForegroundColor Green " Brother tranquilo no es virus - Expresa ¡Paraguayito! " -NoNewLine
@@ -32,7 +13,7 @@ function Test-Admin {
 
 if (!(Test-Admin)) {
     Write-Warning "Brother ejecutalo como ADMIN :V"
-    Start-Sleep 10
+    Start-Sleep 5
     Exit
 }
 
@@ -40,26 +21,51 @@ $sw = [Diagnostics.Stopwatch]::StartNew()
 $Desktop = [Environment]::GetFolderPath("Desktop")
 $Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
 
-Write-Host ""
-Write-Host "[1/4] Buscando archivos .jar modificados en los ultimos 20 min..." -ForegroundColor Green
-$Jars = cmd /c "forfiles /p C:\ /s /m *.jar /d -20 /c `"cmd /c echo @path @fdate @ftime`"" 2>$null
+# Solo buscar en estas carpetas (donde suelen estar los cheats)
+$Paths = @(
+    "$env:USERPROFILE\Desktop",
+    "$env:USERPROFILE\Downloads",
+    "$env:USERPROFILE\Documents",
+    "$env:USERPROFILE\AppData\Local\Temp",
+    "$env:USERPROFILE\AppData\Roaming\.minecraft",
+    "C:\Program Files",
+    "C:\Program Files (x86)"
+)
+
+Write-Host "[1/4] Buscando .jar modificados (20 min)..." -ForegroundColor Green
+$Jars = @()
+foreach ($p in $Paths) {
+    if (Test-Path $p) {
+        $Jars += Get-ChildItem -Path $p -Filter *.jar -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-20) } | ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
+    }
+}
 $JarsLog = Join-Path $Desktop "Jars_20min_$Fecha.txt"
 $Jars | Out-File -FilePath $JarsLog -Encoding UTF8
 Write-Host "   Encontrados: $($Jars.Count)" -ForegroundColor Cyan
 
-Write-Host "[2/4] Buscando archivos .exe modificados en los ultimos 20 min..." -ForegroundColor Green
-$Exes = cmd /c "forfiles /p C:\ /s /m *.exe /d -20 /c `"cmd /c echo @path @fdate @ftime`"" 2>$null
+Write-Host "[2/4] Buscando .exe modificados (20 min)..." -ForegroundColor Green
+$Exes = @()
+foreach ($p in $Paths) {
+    if (Test-Path $p) {
+        $Exes += Get-ChildItem -Path $p -Filter *.exe -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-20) } | ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
+    }
+}
 $ExesLog = Join-Path $Desktop "Exes_20min_$Fecha.txt"
 $Exes | Out-File -FilePath $ExesLog -Encoding UTF8
 Write-Host "   Encontrados: $($Exes.Count)" -ForegroundColor Cyan
 
-Write-Host "[3/4] Buscando archivos .dll modificados en los ultimos 20 min..." -ForegroundColor Green
-$Dlls = cmd /c "forfiles /p C:\ /s /m *.dll /d -20 /c `"cmd /c echo @path @fdate @ftime`"" 2>$null
+Write-Host "[3/4] Buscando .dll modificados (20 min)..." -ForegroundColor Green
+$Dlls = @()
+foreach ($p in $Paths) {
+    if (Test-Path $p) {
+        $Dlls += Get-ChildItem -Path $p -Filter *.dll -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-20) } | ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
+    }
+}
 $DllsLog = Join-Path $Desktop "Dlls_20min_$Fecha.txt"
 $Dlls | Out-File -FilePath $DllsLog -Encoding UTF8
 Write-Host "   Encontrados: $($Dlls.Count)" -ForegroundColor Cyan
 
-Write-Host "[4/4] Buscando archivos eliminados en los ultimos 20 min..." -ForegroundColor Green
+Write-Host "[4/4] Buscando eliminados (USN Journal)..." -ForegroundColor Green
 $Eliminados = @()
 $exesDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
 $dllsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
@@ -74,7 +80,7 @@ $Eliminados | Out-File -FilePath $EliminadosLog -Encoding UTF8
 Write-Host "   Eliminados: $($Eliminados.Count)" -ForegroundColor Cyan
 
 $sw.stop()
-$t = $sw.Elapsed.TotalMinutes
+$t = $sw.Elapsed.TotalSeconds
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -87,8 +93,8 @@ Write-Host "  - Exes_20min_$Fecha.txt ($($Exes.Count))" -ForegroundColor Green
 Write-Host "  - Dlls_20min_$Fecha.txt ($($Dlls.Count))" -ForegroundColor Green
 Write-Host "  - Eliminados_20min_$Fecha.txt ($($Eliminados.Count))" -ForegroundColor Green
 Write-Host ""
-Write-Host "Tiempo: $t Minutos" -ForegroundColor Yellow
+Write-Host "Tiempo: $t segundos" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "Presiona ENTER para abrir la carpeta..." -ForegroundColor Yellow
+Write-Host "Presiona ENTER para abrir el escritorio..." -ForegroundColor Yellow
 Read-Host
 explorer $Desktop
