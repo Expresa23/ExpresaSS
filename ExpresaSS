@@ -18,6 +18,7 @@ $Global:ScriptHashBase = $null
 $Global:Resultados = @{}
 $Global:ContadorHijos = 0
 $Global:Evidencias = @()
+$Global:BackupCreated = $false
 
 try {
     $Global:ScriptHashBase = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -506,10 +507,8 @@ function Show-Results($results) {
         if ($r.Nombre) { Write-Host "$($r.Nombre) " -NoNewline -ForegroundColor White }
         if ($r.PID) { Write-Host "PID:$($r.PID) " -NoNewline -ForegroundColor Gray }
         if ($r.Proceso) { Write-Host "$($r.Proceso) " -NoNewline -ForegroundColor White }
-        if ($r.PID) { Write-Host "PID:$($r.PID) " -NoNewline -ForegroundColor Gray }
         if ($r.DLL) { Write-Host "$($r.DLL) " -NoNewline -ForegroundColor Red }
         if ($r.Ruta) { Write-Host "Ruta:$($r.Ruta) " -NoNewline -ForegroundColor DarkGray }
-        if ($r.Nombre -and -not $r.PID -and -not $r.Proceso) { } 
         if ($r.Valor) { Write-Host "Valor:$($r.Valor) " -NoNewline -ForegroundColor Yellow }
         if ($r.Match) { Write-Host "[$($r.Match)]" -NoNewline -ForegroundColor Red }
         if ($r.Hora) { Write-Host "$($r.Hora) " -NoNewline -ForegroundColor DarkGray }
@@ -530,7 +529,11 @@ function Invoke-AllLayers {
     $layers = @(
         { $results = Scan-Processes; $duration += 5; return $results }
         { $results = Scan-Memory; $duration += 10; return $results }
-        { $results = Scan-Disk -Deep:$Full; $duration += ($Full ? 60 : 15); return $results }
+        { 
+            $results = Scan-Disk -Deep:$Full
+            if ($Full) { $duration += 60 } else { $duration += 15 }
+            return $results
+        }
         { $results = Scan-Registry; $duration += 10; return $results }
         { $results = Scan-Kernel; $duration += 15; return $results }
         { $results = Scan-ExecutionHistory; $duration += 10; return $results }
