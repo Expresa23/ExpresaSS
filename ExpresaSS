@@ -38,9 +38,6 @@ if (!(Test-Admin)) {
 
 $sw = [Diagnostics.Stopwatch]::StartNew()
 
-# ============================================
-# 1. EXTRAER BAM
-# ============================================
 if (!(Get-PSDrive -Name HKLM -PSProvider Registry)){
     Try{New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE}
     Catch{Write-Warning "Error montando HKEY_Local_Machine"}
@@ -48,10 +45,14 @@ if (!(Get-PSDrive -Name HKLM -PSProvider Registry)){
 
 $Users = Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
 $UserBias = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").ActiveTimeBias
-$Bam = @()
+$UserTime = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation").TimeZoneKeyName
 
+$Bam = @()
 foreach ($Sid in $Users) {
     $BamItems = Get-Item -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Property
+    Write-Host -ForegroundColor Green "Extrayendo " -NoNewLine
+    Write-Host -ForegroundColor Blue "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$SID"
+    
     Try { $User = (New-Object System.Security.Principal.SecurityIdentifier($Sid)).Translate([System.Security.Principal.NTAccount]).Value }
     Catch { $User = "Sistema" }
     
@@ -59,77 +60,65 @@ foreach ($Sid in $Users) {
         $Key = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$Sid" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty $Item
         if ($Key.Length -eq 24) {
             $Hex = [System.BitConverter]::ToString($key[7..0]) -replace "-",""
+            $TimeLocal = Get-Date ([DateTime]::FromFileTime([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
+            $TimeUTC = Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))) -Format "yyyy-MM-dd HH:mm:ss"
             $TimeUser = (Get-Date ([DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))).AddMinutes(-([convert]::ToInt32([Convert]::ToString($UserBias,2),2))/60) -Format "yyyy-MM-dd HH:mm:ss")
             $path = $Item -replace "\\Device\\HarddiskVolume\d+\\", "C:\"
+            $f = Split-Path -Leaf $path
+            
             $Bam += [PSCustomObject]@{
-                'Tiempo' = $TimeUser
-                'Archivo' = (Split-Path -Leaf $path)
-                'Ruta' = $path
-                'Usuario' = $User
+                'Tiempo del examinador' = $TimeLocal
+                'Tiempo de ultima ejecucion (UTC)' = $TimeUTC
+                'Tiempo de ultima ejecucion (Hora del usuario)' = $TimeUser
+                'Application' = $f
+                'Path' = $path
+                'Signature' = Get-Signature -FilePath $path
+                'User' = $User
                 'SID' = $Sid
-                'Firma' = Get-Signature -FilePath $path
             }
         }
     }
 }
 
-# ============================================
-# 2. FILTRAR ULTIMOS 30 MINUTOS
-# ============================================
+# Filtrar ultimos 30 minutos
 $Hace30Min = (Get-Date).AddMinutes(-30)
-$BamFiltrado = $Bam | Where-Object { [datetime]$_.Tiempo -gt $Hace30Min }
+$BamFiltrado = $Bam | Where-Object { [datetime]$_.'Tiempo de ultima ejecucion (Hora del usuario)' -gt $Hace30Min }
 
-# ============================================
-# 3. DETECTAR CHEATS (palabras clave)
-# ============================================
+# Palabras clave de cheats
 $CheatKeywords = @("vape", "lunar", "badlion", "rise", "flux", "tenacity", "novoline", "astral", "scorpion", "phoenix", "cloud", "chill", "cotton", "fatal", "inertia", "koid", "skye", "snow", "spook", "tap", "sumo", "raze", "kronos", "lucid", "exelon", "ghost", "trig", "hvh", "bhop", "fly", "anti", "aimbot", "esp", "wall", "glow", "chams", "silent", "trigger", "radar", "xray", "spoofer", "serial", "inject", "loader", "patcher", "crack", "bypass", "client", "utility", "mod", "cheat", "hack", "injector")
 
 $BamCheats = $BamFiltrado | Where-Object {
-    $texto = ($_.Archivo + $_.Ruta).ToLower()
+    $texto = ($_.Application + $_.Path).ToLower()
     foreach ($kw in $CheatKeywords) {
         if ($texto -match $kw) { return $true }
     }
     return $false
 }
 
-# ============================================
-# 4. BUSCAR ARCHIVOS .jar, .exe, .dll RECIENTES
-# ============================================
-$ArchivosRecientes = Get-ChildItem -Path "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads" -Include *.jar,*.exe,*.dll -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.CreationTime -gt $Hace30Min }
-
-# ============================================
-# 5. GUARDAR RESULTADOS
-# ============================================
-$Desktop = [Environment]::GetFolderPath("Desktop")
-$Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
-
-$BamFiltrado | Export-Csv -Path "$Desktop\BAM_Ultimos30Min_$Fecha.csv" -NoTypeInformation -Encoding UTF8
-$BamCheats | Export-Csv -Path "$Desktop\BAM_Cheats_$Fecha.csv" -NoTypeInformation -Encoding UTF8
-$ArchivosRecientes | ForEach-Object { "$($_.FullName) - Creado: $($_.CreationTime)" } | Out-File -FilePath "$Desktop\Archivos_Recientes_$Fecha.txt" -Encoding UTF8
-
-# ============================================
-# 6. MOSTRAR RESUMEN
-# ============================================
 $sw.stop()
-$t = $sw.Elapsed.TotalSeconds
+$t = $sw.Elapsed.TotalMinutes
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host " ANALISIS COMPLETADO" -ForegroundColor Yellow
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Total ejecuciones (BAM): $($Bam.Count)" -ForegroundColor White
+Write-Host "Total ejecuciones: $($Bam.Count)" -ForegroundColor White
 Write-Host "Ultimos 30 min: $($BamFiltrado.Count)" -ForegroundColor Green
 Write-Host "Posibles cheats: $($BamCheats.Count)" -ForegroundColor Red
-Write-Host "Archivos nuevos (.jar, .exe, .dll): $($ArchivosRecientes.Count)" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "Archivos guardados en el escritorio:" -ForegroundColor White
-Write-Host "  - BAM_Ultimos30Min_$Fecha.csv" -ForegroundColor Green
-Write-Host "  - BAM_Cheats_$Fecha.csv" -ForegroundColor Red
-Write-Host "  - Archivos_Recientes_$Fecha.txt" -ForegroundColor Yellow
+Write-Host "Tiempo: $t Minutos" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "Tiempo: $t segundos" -ForegroundColor Cyan
+
+# Mostrar en el panel estilo original
+if ($BamCheats.Count -gt 0) {
+    Write-Host "Mostrando SOLO posibles cheats en el panel..." -ForegroundColor Red
+    $BamCheats | Out-GridView -PassThru -Title "CHEATS DETECTADOS - ($($BamCheats.Count)) - Zona Horaria: ($UserTime)"
+} else {
+    Write-Host "No se detectaron cheats. Mostrando todos los logs de los ultimos 30 min..." -ForegroundColor Yellow
+    $BamFiltrado | Out-GridView -PassThru -Title "ULTIMOS 30 MIN - ($($BamFiltrado.Count)) - Zona Horaria: ($UserTime)"
+}
+
 Write-Host ""
-Write-Host "Presiona ENTER para abrir los archivos..." -ForegroundColor Yellow
+Write-Host "Presiona ENTER para salir..." -ForegroundColor Yellow
 Read-Host
-explorer $Desktop
