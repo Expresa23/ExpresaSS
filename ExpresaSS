@@ -1,6 +1,7 @@
 # AC-BQGE Enhanced Edition
 # Anti-Cheat BQGE - Analisis Forense
-# Mejoras: Deteccion de ORIGEN del self-destruct
+# Mejoras: Papelera de reciclaje, Self-Check anti-borrado,
+# deteccion de self-destruct, integridad del script, modo sigiloso
 # ============================================
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -9,8 +10,8 @@ $Global:SelfDestructDetected = $false
 $Global:ScriptHash = $null
 $Global:ModoSigiloso = $false
 $Global:LogFile = $null
-$Global:SelfDestructOrigen = $null
-$Global:SelfDestructEvidencia = @()
+$Global:SelfDestructCulprit = $null
+$Global:SelfDestructMethod = $null
 
 try {
     $Global:ScriptHash = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -52,9 +53,6 @@ function Show-Banner {
     Write-Host "  FILTRO: ULTIMAS 2 HORAS" -ForegroundColor Yellow
     if ($Global:SelfDestructDetected) {
         Write-Host "  [!!!] SELF-DESTRUCT DETECTADO" -ForegroundColor Red
-        if ($Global:SelfDestructOrigen) {
-            Write-Host "  [!!!] ORIGEN: $Global:SelfDestructOrigen" -ForegroundColor Red
-        }
     }
     Write-Host "  INTEGRIDAD: $($Global:ScriptHash.Substring(0,16))..." -ForegroundColor DarkGray
     Write-Host ""
@@ -78,170 +76,260 @@ function Show-Menu {
     Write-Host "  [9] SELF-CHECK (anti-borrado)" -ForegroundColor Yellow
     Write-Host "  [10] Analisis COMPLETO (TODO)" -ForegroundColor Red
     Write-Host "  [11] Verificar integridad del script" -ForegroundColor White
-    Write-Host "  [12] Modo sigiloso" -ForegroundColor DarkGray
-    Write-Host "  [13] Salir" -ForegroundColor White
+    Write-Host "  [12] Modo sigiloso (log a archivo)" -ForegroundColor DarkGray
+    Write-Host "  [13] Rastrear origen self-destruct" -ForegroundColor Yellow
+    Write-Host "  [14] Restaurar script" -ForegroundColor White
+    Write-Host "  [15] Salir" -ForegroundColor White
     Write-Host ""
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host ""
 }
 
-# ============================================
-# DETECCION DE ORIGEN DE SELF-DESTRUCT
-# ============================================
-function Trace-SelfDestructOrigin {
-    param([string]$ScriptPath)
+function Get-SelfDestructSource {
+    <#
+    .SYNOPSIS
+    Rastrea el origen del self-destruct (proceso que nos lanzó, 
+    tarea programada que nos ejecuta, archivo .bat que nos eliminó) 
+    y ofrece restaurar el script desde papelera o respaldo.
+    #>
+
+    $culprit = @()
     
-    $evidencia = @()
-    $origen = "DESCONOCIDO"
-    $Hace2h = (Get-Date).AddMinutes(-120)
-    
-    Write-Host ""
-    Write-Host "  [*] RASTREANDO ORIGEN DEL SELF-DESTRUCT..." -ForegroundColor Red
-    Write-Host ""
-    
-    # 1. Buscar en Event Log quien elimino el script
-    Write-Host "  [1/5] Buscando en Event Log (Security)..." -ForegroundColor White
+    # --- METODO 1: Proceso padre del shell actual (WMI) ---
     try {
-        $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4663]]" -MaxEvents 500 -ErrorAction SilentlyContinue
+        $currentPid = (Get-Process -Id $pid).Id
+        $parent = Get-WmiObject -Class Win32_Process -Filter "ProcessId = $currentPid" -ErrorAction SilentlyContinue
+        if ($parent) {
+            $parentPid = $parent.ParentProcessId
+            $parentProc = Get-Process -Id $parentPid -ErrorAction SilentlyContinue
+            if ($parentProc) {
+                $parentPath = try { $parentProc.Path } catch { try { $parentProc.MainModule.FileName } catch { "Desconocido" } }
+                $culprit += [PSCustomObject]@{
+                    Tipo = "PADRE (WMI)"
+                    Nombre = $parentProc.ProcessName
+                    PID = $parentPid
+                    Ruta = $parentPath
+                    Inicio = $parentProc.StartTime
+                }
+            }
+        }
+    } catch {}
+    
+    # --- METODO 2: Momento de creación (via Get-Process -IncludeUserName) ---
+    # Intentamos encontrar el ultimo proceso que abrió powershell
+    try {
+        $recentProcs = Get-Process -Name "powershell","pwsh","cmd" -ErrorAction SilentlyContinue | 
+            Where-Object { $_.StartTime -gt $Global:FechaInicio -and $_.Id -ne $pid } |
+            Sort-Object StartTime -Descending
+        
+        foreach ($rp in $recentProcs) {
+            $rpPath = try { $rp.Path } catch { try { $rp.MainModule.FileName } catch { "Desconocido" } }
+            $culprit += [PSCustomObject]@{
+                Tipo = "PROCESO (Recientes)"
+                Nombre = $rp.ProcessName
+                PID = $rp.Id
+                Ruta = $rpPath
+                Inicio = $rp.StartTime
+            }
+        }
+    } catch {}
+    
+    # --- METODO 3: Checksum del evento de seguridad específico para este script ---
+    try {
+        $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4688]]" -MaxEvents 50 -ErrorAction SilentlyContinue
         foreach ($e in $events) {
-            if ($e.TimeCreated -gt $Hace2h) {
+            if ($e.TimeCreated -gt $Global:FechaInicio) {
                 $msg = $e.Message
-                if ($msg -match [regex]::Escape($ScriptPath)) {
-                    $evidencia += "[EVENTO 4663] $($e.TimeCreated) - $($e.Properties[1].Value)"
-                    # Extraer quien ejecuto la accion
-                    if ($msg -match "Account Name:\s*(\S+)") {
-                        $origen = $matches[1]
-                        $evidencia += "[USUARIO] $origen"
+                if ($msg -match [regex]::Escape($PSCommandPath) -or $msg -match "powershell.*-File.*AC-BQGE|pwsh.*-File") {
+                    # Extraer el proceso padre que ejecutó este comando
+                    if ($msg -match -join "Account Name:\s+(.+)") {}
+                    $culprit += [PSCustomObject]@{
+                        Tipo = "EVENTO (4688)"
+                        Nombre = "($e.TimeCreated)"
+                        Ruta = $msg
                     }
-                    if ($msg -match "Process ID:\s*(\d+)") {
-                        $pid = $matches[1]
+                }
+            }
+        }
+    } catch {}
+
+    # --- METODO 4: Tareas programadas que nos referencian ---
+    try {
+        $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue
+        foreach ($t in $tasks) {
+            $actions = $t.Actions
+            if ($actions -match [regex]::Escape($PSCommandPath)) {
+                $culprit += [PSCustomObject]@{
+                    Tipo = "TAREA PROGRAMADA"
+                    Nombre = $t.TaskName
+                    Ruta = $t.TaskPath
+                    Inicio = $t.Date
+                }
+            }
+        }
+    } catch {}
+
+    # --- METODO 5: Buscar en BAM la ultima ejecución de algo que coincida ---
+    try {
+        $bamRoot = "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\"
+        $Users = Get-ChildItem -Path $bamRoot -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
+        foreach ($Sid in $Users) {
+            $BamItems = Get-ItemProperty -Path "$bamRoot$Sid" -ErrorAction SilentlyContinue
+            foreach ($Item in $BamItems.PSObject.Properties) {
+                if ($Item.Name -match "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider") { continue }
+                $Key = $Item.Value
+                if ($Key.Length -ge 8 -and $Item.Name -match "AC-BQGE|selfdestruct|cleanup|wipe" -and $Item.Name -notmatch $PSCommandPath) {
+                    $Hex = [System.BitConverter]::ToString($Key[7..0]) -replace "-",""
+                    $TimeUser = [DateTime]::FromFileTimeUtc([Convert]::ToInt64($Hex, 16))
+                    $path = $Item.Name -replace '\\Device\\HarddiskVolume\d+\\', 'C:\'
+                    $culprit += [PSCustomObject]@{
+                        Tipo = "BAM (Ejecución)"
+                        Nombre = "Sospechoso"
+                        Ruta = $path
+                        Inicio = $TimeUser
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    return $culprit
+}
+
+function Restore-Script {
+    <#
+    .SYNOPSIS
+    Restaura el script desde papelera de reciclaje o desde respaldo temporal.
+    #>
+    $restored = $false
+    $scriptName = Split-Path $PSCommandPath -Leaf
+
+    # Intento 1: Buscar en papelera de reciclaje
+    try {
+        $shell = New-Object -ComObject Shell.Application
+        $recycleBin = $shell.NameSpace(0xa)
+        foreach ($item in $recycleBin.Items()) {
+            if ($item.Name -eq $scriptName) {
+                $origPath = $item.ExtendedProperty("System.Recycle.OriginalLocation")
+                Write-Host "  [!] Archivo encontrado en papelera (origen: $origPath)" -ForegroundColor Yellow
+                Write-Host "  [?] Desea restaurarlo? (S/N)" -ForegroundColor Yellow
+                if ((Read-Host).ToUpper() -eq "S") {
+                    try {
+                        $recycleBin.MoveHere($item.Path)
+                        Write-Host "  [+] Restaurado a ubicacion original." -ForegroundColor Green
+                        $restored = $true
+                    } catch {
+                        Write-Host "  [-] Error al restaurar: $_" -ForegroundColor Red
+                    }
+                }
+                break
+            }
+        }
+        [System.Runtime.InteropServices.Marshal]::ReleaseComObject($shell) | Out-Null
+    } catch {
+        Write-Host "  [-] Error al leer papelera: $_" -ForegroundColor Red
+    }
+
+    # Intento 2: Buscar en el respaldo del sistema (Volume Shadow Copy)
+    if (-not $restored) {
+        try {
+            $vss = Get-WmiObject -Class Win32_ShadowCopy -ErrorAction SilentlyContinue
+            if ($vss) {
+                Write-Host "  [?] Revisar Volume Shadow Copy? (S/N)" -ForegroundColor Yellow
+                if ((Read-Host).ToUpper() -eq "S") {
+                    foreach ($sc in $vss) {
+                        $pathOrig = $PSCommandPath -replace ':','$'  # roughly
                         try {
-                            $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-                            if ($proc) {
-                                $evidencia += "[PROCESO] $($proc.ProcessName) (PID: $pid) - $($proc.Path)"
-                                if ($origen -eq "DESCONOCIDO") { $origen = $proc.ProcessName }
-                            }
+                            $wi = [wmi]$sc.__PATH
+                            $wi.Create("C:\\")
                         } catch {}
                     }
                 }
             }
-        }
-    } catch {}
-    
-    # 2. Buscar en PowerShell logs quien ejecuto comandos de eliminacion
-    Write-Host "  [2/5] Buscando en PowerShell logs..." -ForegroundColor White
-    try {
-        $psEvents = Get-WinEvent -LogName 'Windows PowerShell' -MaxEvents 200 -ErrorAction SilentlyContinue
-        foreach ($e in $psEvents) {
-            if ($e.TimeCreated -gt $Hace2h) {
-                $msg = $e.Message
-                if ($msg -match "Remove-Item|del|erase|Remove-Item -Path.*$([regex]::Escape($ScriptPath))") {
-                    $evidencia += "[PS-LOG] $($e.TimeCreated) - Comando de eliminacion detectado"
-                    if ($msg -match "User:\s*(\S+)") {
-                        $origen = $matches[1]
-                        $evidencia += "[USUARIO-PS] $origen"
-                    }
+        } catch {}
+    }
+
+    # Intento 3: Buscar en Temp/cache del script
+    if (-not $restored) {
+        $respaldos = @(
+            "$env:TEMP\AC-BQGE*",
+            "$env:TEMP\*.ps1.bak",
+            "$env:TEMP\*.ps1.backup"
+        )
+        foreach ($pat in $respaldos) {
+            $files = Get-ChildItem -Path $pat -ErrorAction SilentlyContinue
+            foreach ($f in $files) {
+                Write-Host "  [+] Respaldo encontrado: $($f.FullName)"
+                Write-Host "  [?] Desea restaurarlo? (S/N)"
+                if ((Read-Host).ToUpper() -eq "S") {
+                    $f.CopyTo($PSCommandPath, $true)
+                    Write-Host "  Script restaurado!" -ForegroundColor Green
+                    $restored = $true
+                    break
                 }
             }
         }
-    } catch {}
-    
-    # 3. Buscar archivos .bat/.cmd en TEMP que referencien el script
-    Write-Host "  [3/5] Buscando scripts temporales..." -ForegroundColor White
-    $tempScripts = Get-ChildItem -Path "$env:TEMP" -Include "*.bat","*.cmd","*.ps1" -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -gt $Hace2h }
-    foreach ($ts in $tempScripts) {
-        try {
-            $content = Get-Content -Path $ts.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content -match [regex]::Escape($ScriptPath) -and ($content -match "del|erase|remove|delete")) {
-                $evidencia += "[SCRIPT TEMP] $($ts.FullName) - Creado: $($ts.CreationTime)"
-                $origen = $ts.FullName
-                # Ver si el script fue creado por otro proceso
-                $evidencia += "[SCRIPT CONTENIDO] $content"
+    }
+
+    # Intento 4: Recrear el script desde la memoria actual
+    if (-not $restored -and -not (Test-Path $PSCommandPath)) {
+        Write-Host "  [!] El script no existe en disco y no se encuentra en papelera." -ForegroundColor Red
+        Write-Host "  [?] Desea recrear el script desde la sesion actual (corriendo en memoria)? (S/N)" -ForegroundColor Yellow
+        if ((Read-Host).ToUpper() -eq "S") {
+            $parentDir = Split-Path $PSCommandPath -Parent
+            if (-not (Test-Path $parentDir)) { mkdir $parentDir -Force | Out-Null }
+            $null = Read-Host -Prompt "  Dale ENTER para recrear el script en $PSCommandPath"
+            $myContent = Get-Content -Path "\\?\GLOBALROOT\Device\HarddiskVolume1\..." -ErrorAction SilentlyContinue
+            if (-not $myContent) {
+                # Can't read from memory directly, try to recreate from current execution
+                $source = (Get-PSCallStack | Select-Object -First 1).ScriptName
+                if ($source -and $source -ne "" -and $source -ne "No file") {
+                    try {
+                        $content = (Get-Content $source -Raw -ErrorAction Stop)
+                        if ($content) {
+                            Set-Content -Path $PSCommandPath -Value $content -Encoding UTF8
+                            Write-Host "  Script recreado desde el source original!" -ForegroundColor Green
+                            $restored = $true
+                        }
+                    } catch {
+                        Write-Host "  No se pudo recrear." -ForegroundColor Red
+                    }
+                } else {
+                    # Sesion solo en memoria (e.g. -Command)
+                    try {
+                        $myScript = (Get-PSCallStack)[-1].Position.File
+                        if ($myScript -and $myScript -ne "") {
+                            Copy-Item -Path $myScript -Destination $PSCommandPath -Force -ErrorAction Stop
+                            Write-Host "  Script recreado!" -ForegroundColor Green
+                            $restored = $true
+                        }
+                    } catch {}
+                }
             }
-        } catch {}
+        }
     }
-    
-    # 4. Buscar en tareas programadas
-    Write-Host "  [4/5] Buscando tareas programadas..." -ForegroundColor White
-    try {
-        $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
-            $_.Actions -match "del|erase|remove|delete|self.destruct|cleanup|wipe" -or
-            $_.TaskName -match "self.destruct|cleanup|wipe|delete"
-        }
-        foreach ($t in $tasks) {
-            $evidencia += "[TAREA] $($t.TaskName) - $($t.TaskPath)"
-            $origen = "TAREA: $($t.TaskName)"
-        }
-    } catch {}
-    
-    # 5. Buscar procesos con nombre sospechoso
-    Write-Host "  [5/5] Buscando procesos sospechosos..." -ForegroundColor White
-    try {
-        $procs = Get-Process | Where-Object {
-            $_.ProcessName -match "self.destruct|selfdestruct|cleanup|wipe|destroy|delete|erase|remove|uninstall|antivirus|scan|cleaner|ccleaner|cleanmgr"
-        }
-        foreach ($p in $procs) {
-            $evidencia += "[PROCESO ACTIVO] $($p.ProcessName) (PID: $($p.Id)) - $($p.Path)"
-            if ($origen -eq "DESCONOCIDO") { $origen = $p.ProcessName }
-        }
-    } catch {}
-    
-    # 6. Buscar archivos recientes que referencien self-destruct
-    Write-Host "  [6/6] Buscando archivos con comandos de autoeliminacion..." -ForegroundColor White
-    $recentFiles = Get-ChildItem -Path "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads" -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -gt $Hace2h -and $_.Extension -match "\.(txt|log|bat|cmd|ps1|vbs|js)" }
-    foreach ($rf in $recentFiles) {
-        try {
-            $content = Get-Content -Path $rf.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content -match "self.destruct|cleanup|wipe|delete.*$([regex]::Escape($ScriptPath))") {
-                $evidencia += "[ARCHIVO RECIENTE] $($rf.FullName) - $($rf.LastWriteTime)"
-                $origen = $rf.FullName
-            }
-        } catch {}
-    }
-    
-    $Global:SelfDestructOrigen = $origen
-    $Global:SelfDestructEvidencia = $evidencia
-    
-    Write-Host ""
-    Write-Host "  ========================================" -ForegroundColor Red
-    Write-Host "  ORIGEN DEL SELF-DESTRUCT:" -ForegroundColor White
-    Write-Host "  ========================================" -ForegroundColor Red
-    Write-Host ""
-    
-    if ($origen -ne "DESCONOCIDO") {
-        Write-Host "  [!!!] ORIGEN DETECTADO: $origen" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "  Evidencia recolectada:" -ForegroundColor Yellow
-        foreach ($e in $evidencia) {
-            Write-Host "    $e" -ForegroundColor White
-        }
-    } else {
-        Write-Host "  No se pudo determinar el origen exacto." -ForegroundColor Yellow
-        Write-Host "  Posibles causas:" -ForegroundColor White
-        Write-Host "    - El script fue eliminado manualmente por el usuario" -ForegroundColor DarkGray
-        Write-Host "    - El script fue eliminado por un antivirus" -ForegroundColor DarkGray
-        Write-Host "    - El script fue eliminado por un programa de limpieza" -ForegroundColor DarkGray
-    }
-    
-    return $evidencia
+
+    return $restored
 }
 
 function Check-SelfDestruct {
+    param([switch]$NoPause)
     Show-Banner
     Write-Host "  [SELF-CHECK] DETECTANDO AUTO-BORRADO..." -ForegroundColor Red
     Write-Host ""
 
     $sospechas = @()
     $Hace2h = (Get-Date).AddMinutes(-120)
+    $Global:SelfDestructCulprit = @()
+    $Global:SelfDestructMethod = $null
 
     if (-not (Test-Path $PSCommandPath)) {
         $sospechas += "[CRITICO] El script ha sido ELIMINADO del disco"
         $Global:SelfDestructDetected = $true
+        $Global:SelfDestructMethod = "ELIMINACION"
     }
 
-    Write-Host "  [1/6] Buscando tareas programadas sospechosas..." -ForegroundColor White
+    Write-Host "  [1/5] Buscando tareas programadas sospechosas..." -ForegroundColor White
     try {
         $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
             $_.Actions -match "del|remove|erase|clean|wipe|self.destruct|cleanup|destroy|purge|delete"
@@ -252,74 +340,62 @@ function Check-SelfDestruct {
         }
     } catch {}
 
-    Write-Host "  [2/6] Verificando permisos del script..." -ForegroundColor White
+    Write-Host "  [2/5] Buscando procesos con handles a este script..." -ForegroundColor White
+    try {
+        $openHandles = & "cmd.exe" "/C handle.exe -a -p ""$PSCommandPath"" 2>nul" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $openHandles) {
+            $sospechas += "[HANDLE] Procesos mantienen abierto el script: $openHandles"
+            Write-Host "      - $openHandles" -ForegroundColor Red
+        }
+    } catch {}
+
+    Write-Host "  [3/5] Verificando permisos del script..." -ForegroundColor White
     try {
         $acl = Get-Acl -Path $PSCommandPath -ErrorAction SilentlyContinue
         if (-not $acl) {
             $sospechas += "[CRITICO] No se puede leer ACL del script - posible eliminacion en curso"
+            $Global:SelfDestructMethod = "ELIMINACION_ACL"
         }
     } catch {
         $sospechas += "[CRITICO] Error al leer permisos - el archivo puede estar siendo borrado"
+        $Global:SelfDestructMethod = "ELIMINACION_PERMISOS"
     }
 
-    Write-Host "  [3/6] Verificando eventos de eliminacion en Security Log..." -ForegroundColor White
+    Write-Host "  [4/5] Verificando eventos de eliminacion en Security Log..." -ForegroundColor White
     try {
         $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4663]]" -MaxEvents 100 -ErrorAction SilentlyContinue
         foreach ($e in $events) {
-            $msg = $e.Message
-            if ($msg -match [regex]::Escape($PSCommandPath)) {
-                $sospechas += "[EVENTO] Intento de acceso/eliminacion al script: $($e.TimeCreated)"
-                # Extraer proceso
-                if ($msg -match "Process ID:\s*(\d+)") {
-                    $pid = $matches[1]
-                    try {
-                        $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-                        if ($proc) {
-                            $sospechas += "[PROCESO] $($proc.ProcessName) (PID: $pid) - $($proc.Path)"
-                        }
-                    } catch {}
+            if ($e.TimeCreated -gt $Hace2h) {
+                $msg = $e.Message
+                if ($msg -match [regex]::Escape($PSCommandPath)) {
+                    # Extract process that performed the access
+                    $procName = "?"
+                    $procPid = "?"
+                    if ($msg -match "Process Name:\s+(.+?)(\r|\n)") { $procName = $matches[1].Trim() }
+                    if ($msg -match "Process ID:\s+(\d+)") { $procPid = $matches[1] }
+                    $sospechas += "[EVENTO] Intento de acceso/eliminacion al script: $($e.TimeCreated) - Proc: $procName ($procPid)"
+                    Write-Host "      - Time: $($e.TimeCreated) | Proc: $procName PID:$procPid" -ForegroundColor Red
                 }
             }
         }
     } catch {}
 
-    Write-Host "  [4/6] Verificando archivos .bat/.cmd temporales que referencien autoeliminacion..." -ForegroundColor White
-    $tempBats = Get-ChildItem -Path "$env:TEMP" -Filter "*.bat" -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -gt $Hace2h }
-    foreach ($bat in $tempBats) {
+    Write-Host "  [5/5] Verificando archivos .bat/.cmd temporales que referencien autoeliminacion..." -ForegroundColor White
+    $tempBats = Get-ChildItem -Path "$env:TEMP" -Filter "*.*" -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt $Hace2h -and $_.Extension -match '\.(bat|cmd|ps1|vbs|js|jse)' }
+    foreach ($scriptFile in $tempBats) {
         try {
-            $content = Get-Content -Path $bat.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content -match "self.destruct|del.*\.ps1|erase.*\.ps1|cleanup|wipe") {
-                $sospechas += "[BAT] Archivo .bat con instrucciones de autoeliminacion: $($bat.FullName)"
-                Write-Host "      - $($bat.Name)" -ForegroundColor Red
+            $content = Get-Content -Path $scriptFile.FullName -Raw -ErrorAction SilentlyContinue
+            if ($content -match "self.destruct|del.*\.ps1|erase.*\.ps1|cleanup|wipe|Remove-Item.*ps1") {
+                $sospechas += "[SCRIPT] Archivo con instrucciones de autoeliminacion: $($scriptFile.FullName)"
+                Write-Host "      - $($scriptFile.Name)" -ForegroundColor Red
             }
         } catch {}
     }
 
-    Write-Host "  [5/6] Verificando procesos activos sospechosos..." -ForegroundColor White
-    try {
-        $procs = Get-Process | Where-Object {
-            $_.ProcessName -match "self.destruct|cleanup|wipe|destroy|delete|erase|remove|uninstall|antivirus|ccleaner|cleanmgr"
-        }
-        foreach ($p in $procs) {
-            $sospechas += "[PROCESO] Proceso activo sospechoso: $($p.ProcessName) (PID: $($p.Id))"
-            Write-Host "      - $($p.ProcessName) (PID: $($p.Id))" -ForegroundColor Yellow
-        }
-    } catch {}
-
-    Write-Host "  [6/6] Verificando archivos de eliminacion recientes..." -ForegroundColor White
-    $recentFiles = Get-ChildItem -Path "$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads" -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { $_.LastWriteTime -gt $Hace2h -and $_.Extension -match "\.(txt|log|bat|cmd|ps1)" }
-    foreach ($rf in $recentFiles) {
-        try {
-            $content = Get-Content -Path $rf.FullName -Raw -ErrorAction SilentlyContinue
-            if ($content -match "self.destruct|cleanup|wipe|delete.*$([regex]::Escape($PSCommandPath))") {
-                $sospechas += "[ARCHIVO] Archivo reciente con instrucciones: $($rf.FullName)"
-                Write-Host "      - $($rf.Name)" -ForegroundColor Red
-            }
-        } catch {}
-    }
-
+    # Intentar rastrear el origen
+    $culprits = Get-SelfDestructSource
+    
     Write-Host ""
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host "  RESULTADOS SELF-CHECK:" -ForegroundColor White
@@ -327,27 +403,76 @@ function Check-SelfDestruct {
     Write-Host ""
 
     if ($sospechas.Count -gt 0) {
-        Write-Host "  [!!!] SE DETECTARON $($sospechas.Count) INDICIOS DE SELF-DESTRUCT" -ForegroundColor Red
+        Write-Host "  [!] SE DETECTARON $($sospechas.Count) INDICIOS DE SELF-DESTRUCT" -ForegroundColor Red
         Write-Host ""
         foreach ($s in $sospechas) {
-            Write-Host "  $s" -ForegroundColor White
+            Write-Host "  $s"
         }
         $Global:SelfDestructDetected = $true
-        
-        # Iniciar rastreo de origen
         Write-Host ""
-        Write-Host "  [*] Iniciando rastreo de origen..." -ForegroundColor Yellow
-        Trace-SelfDestructOrigin -ScriptPath $PSCommandPath
-        
+
+        # --- MOSTRAR EL CULPABLE ---
+        if ($culprits.Count -gt 0) {
+            Write-Host "  ========================================" -ForegroundColor Red
+            Write-Host "  RASTREO DE CULPABLES:"
+            Write-Host "  ========================================" -ForegroundColor Red
+            $Global:SelfDestructCulprit = $culprits
+            $count = 1
+            foreach ($c in $culprits) {
+                Write-Host ""
+                Write-Host "  [$count] $($c.Tipo):" -ForegroundColor Yellow
+                Write-Host "      Nombre: $($c.Nombre)"
+                Write-Host "      Ruta: $($c.Ruta)"
+                Write-Host "      PID: $($c.PID)"
+                if ($c.Inicio) { Write-Host "      Hora: $($c.Inicio)" }
+                $count++
+            }
+        }
+
+        # --- SI EL SCRIPT FUE ELIMINADO, OFRECER RESTAURAR ---
+        if (-not (Test-Path $PSCommandPath)) {
+            Write-Host ""
+            Write-Host "  [!] Script eliminado de disco!" -ForegroundColor Red
+            Write-Host "  [?] Desea intentar restaurarlo? (S/N)" -ForegroundColor Yellow
+            if ((Read-Host).ToUpper() -eq "S") {
+                $restored = Restore-Script
+                if ($restored) {
+                    Write-Host "  [+] Script restaurado exitosamente!" -ForegroundColor Green
+                }
+            }
+        } else {
+            # Script existe - ofrecer guardar los datos del culpable
+            Write-Host ""
+            Write-Host "  [?] Guardar informacion del origen en TXT? (S/N)" -ForegroundColor Yellow
+            if ((Read-Host).ToUpper() -eq "S") {
+                $Desktop = [Environment]::GetFolderPath("Desktop")
+                $Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
+                @"
+AC-BQGE SELF-DESTRUCT SOURCE REPORT
+Fecha: $(Get-Date)
+Script: $PSCommandPath
+
+--- CULPABLES RASTREADOS ---
+
+$($culprits | Format-Table -AutoSize | Out-String)
+
+--- SOSPECHAS DETECTADAS ---
+
+$($sospechas -join "`n")
+"@ | Out-File -FilePath "$Desktop\AC-BQGE_SelfDestructSource_$Fecha.txt" -Encoding UTF8
+                Write-Host "  Guardado." -ForegroundColor Green
+            }
+        }
     } else {
         Write-Host "  No se encontraron indicios de auto-borrado." -ForegroundColor Green
         Write-Host "  El script parece seguro." -ForegroundColor Green
-        $Global:SelfDestructDetected = $false
     }
 
-    Write-Host ""
-    Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
-    Read-Host
+    if (-not $NoPause) {
+        Write-Host ""
+        Write-Host "  Presiona ENTER para continuar..." -ForegroundColor White
+        Read-Host
+    }
 }
 
 function Search-Files {
@@ -619,7 +744,7 @@ function Check-Integrity {
     $alerts = @()
     $Hace2h = (Get-Date).AddMinutes(-120)
 
-    Write-Host "  [1/7] Verificando hash del script..." -ForegroundColor White
+    Write-Host "  [1/6] Verificando hash del script..." -ForegroundColor White
     $currentHash = $null
     try {
         $currentHash = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -635,7 +760,7 @@ function Check-Integrity {
         $alerts += "[HASH] No se pudo calcular el hash"
     }
 
-    Write-Host "  [2/7] Verificando permisos y atributos..." -ForegroundColor White
+    Write-Host "  [2/6] Verificando permisos y atributos..." -ForegroundColor White
     try {
         $acl = Get-Acl -Path $PSCommandPath -ErrorAction Stop
         Write-Host "      Owner: $($acl.Owner)" -ForegroundColor White
@@ -650,7 +775,7 @@ function Check-Integrity {
         $alerts += "[PERMISOS] No se pudo leer ACL"
     }
 
-    Write-Host "  [3/7] Verificando ubicacion en disco..." -ForegroundColor White
+    Write-Host "  [3/6] Verificando ubicacion en disco..." -ForegroundColor White
     if (Test-Path $PSCommandPath) {
         $fi = Get-Item -Path $PSCommandPath -Force
         Write-Host "      Ruta: $($fi.FullName)" -ForegroundColor White
@@ -661,7 +786,7 @@ function Check-Integrity {
         $alerts += "[CRITICO] El script NO EXISTE en disco"
     }
 
-    Write-Host "  [4/7] Buscando procesos con el script abierto..." -ForegroundColor White
+    Write-Host "  [4/6] Buscando procesos con el script abierto..." -ForegroundColor White
     try {
         $handleMatch = & "cmd.exe" "/C handle.exe -a -p ""$PSCommandPath"" 2>nul" 2>$null
         if ($LASTEXITCODE -eq 0 -and $handleMatch) {
@@ -674,7 +799,7 @@ function Check-Integrity {
         Write-Host "      No se pudo verificar handles (handle.exe no disponible)" -ForegroundColor DarkGray
     }
 
-    Write-Host "  [5/7] Buscando scripts que referencien este archivo..." -ForegroundColor White
+    Write-Host "  [5/6] Buscando scripts que referencien este archivo..." -ForegroundColor White
     $suspiciousScripts = Get-ChildItem -Path "$env:TEMP" -Filter "*.ps1" -Recurse -ErrorAction SilentlyContinue |
         Where-Object { $_.LastWriteTime -gt $Hace2h }
     foreach ($s in $suspiciousScripts) {
@@ -687,7 +812,7 @@ function Check-Integrity {
         } catch {}
     }
 
-    Write-Host "  [6/7] Verificando tareas programadas maliciosas..." -ForegroundColor White
+    Write-Host "  [6/6] Verificando tareas programadas maliciosas..." -ForegroundColor White
     try {
         $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
             $_.TaskPath -match "Temp|Startup|User_Feed_Synchronization" -or
@@ -696,25 +821,6 @@ function Check-Integrity {
         foreach ($t in $tasks) {
             $alerts += "[TASK] Tarea sospechosa: $($t.TaskName)"
             Write-Host "      $($t.TaskName) - $($t.TaskPath)" -ForegroundColor Yellow
-        }
-    } catch {}
-
-    Write-Host "  [7/7] Buscando origen de modificaciones..." -ForegroundColor White
-    try {
-        $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4663]]" -MaxEvents 100 -ErrorAction SilentlyContinue
-        foreach ($e in $events) {
-            if ($e.TimeCreated -gt $Hace2h -and $e.Message -match [regex]::Escape($PSCommandPath)) {
-                $alerts += "[EVENTO] Modificacion/eliminacion detectada: $($e.TimeCreated)"
-                if ($e.Message -match "Process ID:\s*(\d+)") {
-                    $pid = $matches[1]
-                    try {
-                        $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
-                        if ($proc) {
-                            $alerts += "[ORIGEN] $($proc.ProcessName) (PID: $pid) - $($proc.Path)"
-                        }
-                    } catch {}
-                }
-            }
         }
     } catch {}
 
@@ -729,7 +835,6 @@ function Check-Integrity {
         foreach ($a in $alerts) {
             Write-Host "  $a"
         }
-        $Global:SelfDestructDetected = $true
     } else {
         Write-Host "  Script integro y sin compromisos." -ForegroundColor Green
     }
@@ -747,7 +852,7 @@ function Detect-InjectionHooks {
     $HooksDetectados = @()
     $Hace2h = (Get-Date).AddMinutes(-120)
 
-    Write-Host "  [1/7] Buscando procesos sospechosos..." -ForegroundColor White
+    Write-Host "  [1/6] Buscando procesos sospechosos..." -ForegroundColor White
     $suspiciousPattern = "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector|selfdestruct|self.destruct"
     $ProcesosSospechosos = Get-Process | Where-Object { $_.ProcessName -match $suspiciousPattern }
     foreach ($proc in $ProcesosSospechosos) {
@@ -760,7 +865,7 @@ function Detect-InjectionHooks {
         $HooksDetectados += "[PROCESO] $($proc.ProcessName) - $($proc.Id)$timeInfo"
     }
 
-    Write-Host "  [2/7] Verificando inyeccion de DLLs..." -ForegroundColor White
+    Write-Host "  [2/6] Verificando inyeccion de DLLs..." -ForegroundColor White
     $javaProcs = Get-Process -Name "java" -ErrorAction SilentlyContinue
     $minecraftProcs = Get-Process | Where-Object { $_.ProcessName -match "minecraft|javaw" }
     $targetProcs = $javaProcs + $minecraftProcs
@@ -777,7 +882,7 @@ function Detect-InjectionHooks {
         } catch {}
     }
 
-    Write-Host "  [3/7] Buscando archivos de inyeccion recientes..." -ForegroundColor White
+    Write-Host "  [3/6] Buscando archivos de inyeccion recientes..." -ForegroundColor White
     $InjectionFiles = @()
     $Paths = @(
         "$env:USERPROFILE\Desktop",
@@ -803,7 +908,7 @@ function Detect-InjectionHooks {
         }
     }
 
-    Write-Host "  [4/7] Verificando hooks de API (Detours, MinHook)..." -ForegroundColor White
+    Write-Host "  [4/6] Verificando hooks de API (Detours, MinHook)..." -ForegroundColor White
     try {
         $loadedDlls = Get-Process | ForEach-Object {
             try { $_.Modules } catch {}
@@ -814,7 +919,7 @@ function Detect-InjectionHooks {
         }
     } catch {}
 
-    Write-Host "  [5/7] Verificando registro de Windows..." -ForegroundColor White
+    Write-Host "  [5/6] Verificando registro de Windows..." -ForegroundColor White
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
         "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run",
@@ -835,7 +940,7 @@ function Detect-InjectionHooks {
         }
     }
 
-    Write-Host "  [6/7] Verificando Scheduled Tasks para inyeccion persistente..." -ForegroundColor White
+    Write-Host "  [6/6] Verificando Scheduled Tasks para inyeccion persistente..." -ForegroundColor White
     try {
         $suspTasks = Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
             $_.Actions -match "inject|hook|loader|cheat|vape|self.destruct|cleanup|wipe|destroy"
@@ -845,22 +950,6 @@ function Detect-InjectionHooks {
             $HooksDetectados += "[TASK] $($t.TaskName)"
         }
     } catch {}
-
-    Write-Host "  [7/7] Verificando integridad del script y self-destruct..." -ForegroundColor White
-    if ($Global:SelfDestructDetected) {
-        Write-Host "      [!!!] SELF-DESTRUCT DETECTADO PREVIAMENTE" -ForegroundColor Red
-        $HooksDetectados += "[SELF-DESTRUCT] Detectado - Origen: $Global:SelfDestructOrigen"
-    } else {
-        # Verificacion rapida
-        $currentHash = try { (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash } catch { $null }
-        if ($currentHash -and $Global:ScriptHash -ne "NO_DISPONIBLE" -and $currentHash -ne $Global:ScriptHash) {
-            Write-Host "      [!!!] EL SCRIPT HA SIDO MODIFICADO" -ForegroundColor Red
-            $HooksDetectados += "[MODIFICACION] Hash cambiado"
-            $Global:SelfDestructDetected = $true
-        } else {
-            Write-Host "      OK - Script integro" -ForegroundColor Green
-        }
-    }
 
     Write-Host ""
     Write-Host "  ========================================" -ForegroundColor Red
@@ -899,7 +988,7 @@ function Search-All {
     $Hace2h = (Get-Date).AddMinutes(-120)
     $StartTime = Get-Date
 
-    Write-Host "  [1/7] Buscando .jar, .exe, .dll..." -ForegroundColor White
+    Write-Host "  [1/6] Buscando .jar, .exe, .dll..." -ForegroundColor White
     $Jars = @(); $Exes = @(); $Dlls = @()
     $Paths = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\AppData\Roaming\.minecraft")
     foreach ($p in $Paths) {
@@ -917,7 +1006,7 @@ function Search-All {
     }
     Write-Host "        JAR: $($Jars.Count) | EXE: $($Exes.Count) | DLL: $($Dlls.Count)" -ForegroundColor Green
 
-    Write-Host "  [2/7] Buscando eliminados..." -ForegroundColor White
+    Write-Host "  [2/6] Buscando eliminados..." -ForegroundColor White
     $Deleted = @()
     $usnFile = "$env:TEMP\usn_full.txt"
     cmd /c "fsutil usn readjournal c: csv > $usnFile" 2>$null
@@ -928,7 +1017,7 @@ function Search-All {
     }
     Write-Host "        Eliminados: $($Deleted.Count)" -ForegroundColor Green
 
-    Write-Host "  [3/7] Analizando papelera..." -ForegroundColor White
+    Write-Host "  [3/6] Analizando papelera..." -ForegroundColor White
     $Recycled = @()
     try {
         $shell = New-Object -ComObject Shell.Application
@@ -942,7 +1031,7 @@ function Search-All {
     } catch {}
     Write-Host "        En papelera: $($Recycled.Count)" -ForegroundColor Green
 
-    Write-Host "  [4/7] Extrayendo BAM..." -ForegroundColor White
+    Write-Host "  [4/6] Extrayendo BAM..." -ForegroundColor White
     $Bam = @()
     $bamRoot = "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\"
     $Users = Get-ChildItem -Path $bamRoot -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
@@ -964,7 +1053,7 @@ function Search-All {
     }
     Write-Host "        Ejecuciones BAM: $($Bam.Count)" -ForegroundColor Green
 
-    Write-Host "  [5/7] Detectando hooks de inyeccion..." -ForegroundColor White
+    Write-Host "  [5/6] Detectando hooks de inyeccion..." -ForegroundColor White
     $Hooks = @()
     $ProcesosSospechosos = Get-Process | Where-Object {
         $_.ProcessName -match "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector|selfdestruct|cleanup|wipe"
@@ -974,21 +1063,10 @@ function Search-All {
     }
     Write-Host "        Hooks: $($Hooks.Count)" -ForegroundColor Green
 
-    Write-Host "  [6/7] Self-Check integridad..." -ForegroundColor White
+    Write-Host "  [6/6] Self-Check integridad..." -ForegroundColor White
     $beforeCheck = $Global:SelfDestructDetected
-    $null = Check-SelfDestruct
-    Write-Host "        Self-destruct: $(if ($Global:SelfDestructDetected) { "DETECTADO!" } else { "OK" })"
-    if ($Global:SelfDestructOrigen -and $Global:SelfDestructOrigen -ne "DESCONOCIDO") {
-        Write-Host "        Origen: $Global:SelfDestructOrigen" -ForegroundColor Red
-    }
-
-    Write-Host "  [7/7] Verificando integridad hash..." -ForegroundColor White
-    $currentHash = try { (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash } catch { $null }
-    if ($currentHash -and $Global:ScriptHash -ne "NO_DISPONIBLE" -and $currentHash -ne $Global:ScriptHash) {
-        Write-Host "        [!!!] EL SCRIPT HA SIDO MODIFICADO" -ForegroundColor Red
-    } else {
-        Write-Host "        OK - Script integro" -ForegroundColor Green
-    }
+    $null = Check-SelfDestruct -NoPause
+    Write-Host "        Self-destruct: $(if ($Global:SelfDestructDetected) { "DETECTADO!" } else { "OK" })" 
 
     $Elapsed = (Get-Date) - $StartTime
     Write-Host ""
@@ -1000,9 +1078,6 @@ function Search-All {
     Write-Host "    BAM (ejecuciones): $($Bam.Count)" -ForegroundColor White
     Write-Host "    Hooks de inyeccion: $($Hooks.Count)" -ForegroundColor Red
     Write-Host "    Self-destruct: $(if ($Global:SelfDestructDetected) { "DETECTADO!" } else { "No detectado" })"
-    if ($Global:SelfDestructOrigen -and $Global:SelfDestructOrigen -ne "DESCONOCIDO") {
-        Write-Host "    Origen: $Global:SelfDestructOrigen" -ForegroundColor Red
-    }
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host ""
 
@@ -1010,14 +1085,11 @@ function Search-All {
     if ((Read-Host).ToUpper() -eq "S") {
         $Desktop = [Environment]::GetFolderPath("Desktop")
         $Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
-        $reporte = @"
+@"
 AC-BQGE ENHANCED - REPORTE COMPLETO
 Fecha: $(Get-Date)
 Script: $PSCommandPath
 Self-destruct: $(if ($Global:SelfDestructDetected) { "DETECTADO" } else { "No detectado" })
-Origen Self-destruct: $($Global:SelfDestructOrigen)
-Hash actual: $currentHash
-Hash original: $($Global:ScriptHash)
 
 === ARCHIVOS .JAR ===
 $($Jars -join "`n")
@@ -1039,11 +1111,7 @@ $($Bam -join "`n")
 
 === HOOKS DE INYECCION ===
 $($Hooks -join "`n")
-
-=== EVIDENCIA SELF-DESTRUCT ===
-$($Global:SelfDestructEvidencia -join "`n")
-"@
-        $reporte | Out-File -FilePath "$Desktop\AC-BQGE_Reporte_$Fecha.txt" -Encoding UTF8
+"@ | Out-File -FilePath "$Desktop\AC-BQGE_Reporte_$Fecha.txt" -Encoding UTF8
         Write-Host "  Reporte guardado en el escritorio." -ForegroundColor Green
     }
 
@@ -1078,7 +1146,7 @@ if (!(Test-Admin)) {
 }
 
 # Self-check inicial
-Check-SelfDestruct
+Check-SelfDestruct -NoPause
 
 do {
     Show-Menu
@@ -1104,15 +1172,63 @@ do {
         "12" { Toggle-StealthMode }
         "13" {
             Show-Banner
+            Write-Host "  Rastreando origen del self-destruct..." -ForegroundColor Red
+            $culprits = Get-SelfDestructSource
+            if ($culprits.Count -gt 0) {
+                Write-Host ""
+                Write-Host "  POSIBLES CULPABLES ENCONTRADOS:" -ForegroundColor Yellow
+                Write-Host ""
+                $count = 1
+                foreach ($c in $culprits) {
+                    Write-Host "  [$count] $($c.Tipo)" -ForegroundColor White
+                    Write-Host "       Nombre: $($c.Nombre)" -ForegroundColor White
+                    Write-Host "       Ruta: $($c.Ruta)" -ForegroundColor White
+                    if ($c.PID) { Write-Host "       PID: $($c.PID)" -ForegroundColor White }
+                    $count++
+                }
+                Write-Host ""
+                Write-Host "  [?] Guardar en TXT? (S/N)" -ForegroundColor Yellow
+                if ((Read-Host).ToUpper() -eq "S") {
+                    $Desktop = [Environment]::GetFolderPath("Desktop")
+                    $Fecha = Get-Date -Format "yyyy-MM-dd_HH-mm"
+                    $culprits | Format-Table -AutoSize | Out-File -FilePath "$Desktop\AC-BQGE_SelfDestructSource_$Fecha.txt" -Encoding UTF8
+                    Write-Host "  Guardado." -ForegroundColor Green
+                }
+            } else {
+                Write-Host "  No se encontraron posibles origenes." -ForegroundColor Yellow
+            }
+            Write-Host ""
+            Write-Host "  Presiona ENTER para continuar..."
+            Read-Host
+        }
+        "14" {
+            Show-Banner
+            Write-Host "  Restaurando script..." -ForegroundColor Red
+            if (Test-Path $PSCommandPath) {
+                Write-Host "  El script ya existe en disco." -ForegroundColor Yellow
+                Write-Host "  [?] Sobrescribir? (S/N)" -ForegroundColor Yellow
+                if ((Read-Host).ToUpper() -eq "S") {
+                    $null = Restore-Script
+                }
+            } else {
+                $restored = Restore-Script
+                if ($restored) {
+                    Write-Host "  Script restaurado exitosamente!" -ForegroundColor Green
+                } else {
+                    Write-Host "  No se pudo restaurar." -ForegroundColor Red
+                }
+            }
+            Write-Host ""
+            Write-Host "  Presiona ENTER para continuar..."
+            Read-Host
+        }
+        "15" {
+            Show-Banner
             Write-Host "  ========================================" -ForegroundColor Red
             Write-Host "     GRACIAS POR USAR AC-BQGE ENHANCED" -ForegroundColor White
             Write-Host "  ========================================" -ForegroundColor Red
             Write-Host ""
-            if ($Global:SelfDestructDetected) {
-                Write-Host "  [!!!] SELF-DESTRUCT DETECTADO - Origen: $Global:SelfDestructOrigen" -ForegroundColor Red
-                Write-Host "  [*] Evidencia guardada en: $($Global:SelfDestructEvidencia.Count) registros" -ForegroundColor Yellow
-            }
-            Start-Sleep 5
+            Start-Sleep 2
             Exit
         }
         default {
