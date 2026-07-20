@@ -34,8 +34,8 @@ function Get-Signature {
 Clear-Host
 Write-Host ""
 Write-Host ""
-Write-Host -ForegroundColor Green " Brother tranquilo no es virus - Expresa  ¡Paraguayito! " -NoNewLine
-Write-Host -ForegroundColor Yellow " discord.gg/electrichcf"
+Write-Host -ForegroundColor Green " Brother tranquilo no es virus - Expresa (bqge) ¡Paraguayito! " -NoNewLine
+Write-Host -ForegroundColor Yellow " discord.gg/bqge"
 Write-Host ""
 
 function Test-Admin {
