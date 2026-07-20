@@ -21,7 +21,7 @@ function Get-Signature {
 
 Clear-Host
 Write-Host ""
-Write-Host -ForegroundColor Red " ⚡ FORENSIC HUNTER - Analisis Avanzado ⚡"
+Write-Host -ForegroundColor Red "Analisis Avanzado"
 Write-Host -ForegroundColor Yellow " Buscando: Hacks, Cheats, Injectables, Malware"
 Write-Host -ForegroundColor Green " Expresa - Paraguayito"
 Write-Host ""
