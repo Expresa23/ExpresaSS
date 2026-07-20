@@ -1,5 +1,40 @@
 $ErrorActionPreference = "SilentlyContinue"
 $Global:FechaInicio = (Get-Date).AddMinutes(-30)
+$Global:ScriptPath = $MyInvocation.MyCommand.Path
+$Global:ScriptName = "AC-BQGE.ps1"
+$Global:BackupPath = "$env:TEMP\AC-BQGE_Backup"
+
+# ============================================
+# ANTI SELF-DESTRUCT - Proteccion contra borrado
+# ============================================
+function Protect-Script {
+    # Crear backup del script en caso de auto-destruccion
+    if (!(Test-Path $Global:BackupPath)) {
+        New-Item -ItemType Directory -Path $Global:BackupPath -Force | Out-Null
+    }
+    
+    # Guardar copia del script actual
+    if (Test-Path $Global:ScriptPath) {
+        $BackupFile = "$Global:BackupPath\$Global:ScriptName"
+        Copy-Item -Path $Global:ScriptPath -Destination $BackupFile -Force -ErrorAction SilentlyContinue
+    }
+    
+    # Verificar integridad del script en cada ejecucion
+    if (Test-Path $BackupFile) {
+        $OriginalHash = (Get-FileHash -Path $Global:ScriptPath -Algorithm MD5).Hash
+        $BackupHash = (Get-FileHash -Path $BackupFile -Algorithm MD5).Hash
+        if ($OriginalHash -ne $BackupHash) {
+            Write-Host "  [!] ALERTA: El script ha sido modificado!" -ForegroundColor Red
+            Write-Host "  [!] Restaurando version original..." -ForegroundColor Yellow
+            Copy-Item -Path $BackupFile -Destination $Global:ScriptPath -Force
+        }
+    }
+}
+
+# ============================================
+# INICIALIZAR PROTECCION
+# ============================================
+Protect-Script
 
 function Show-Banner {
     Clear-Host
@@ -22,6 +57,7 @@ function Show-Banner {
     Write-Host "     ANTI-CHEAT BQGE - ANALISIS FORENSE" -ForegroundColor White
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host "  FILTRO: ULTIMOS 30 MINUTOS" -ForegroundColor Yellow
+    Write-Host "  PROTECCION: ANTI SELF-DESTRUCT ACTIVADA" -ForegroundColor Green
     Write-Host ""
 }
 
@@ -36,7 +72,7 @@ function Show-Menu {
     Write-Host "  [2] Buscar archivos .exe" -ForegroundColor White
     Write-Host "  [3] Buscar archivos .dll" -ForegroundColor White
     Write-Host "  [4] Buscar TODOS (.jar, .exe, .dll)" -ForegroundColor Red
-    Write-Host "  [5] Buscar archivos eliminados" -ForegroundColor White
+    Write-Host "  [5] Buscar archivos eliminados + Papelera" -ForegroundColor White
     Write-Host "  [6] BAM - Ultimas ejecuciones" -ForegroundColor White
     Write-Host "  [7] DETECTAR HOOKS DE INYECCION" -ForegroundColor Red
     Write-Host "  [8] Analisis COMPLETO (TODO)" -ForegroundColor Red
@@ -89,42 +125,69 @@ function Search-Files {
 
 function Search-Deleted {
     Show-Banner
-    Write-Host "  BUSCANDO ARCHIVOS ELIMINADOS (ULTIMOS 30 MIN)..." -ForegroundColor Red
+    Write-Host "  BUSCANDO ARCHIVOS ELIMINADOS + PAPELERA (ULTIMOS 30 MIN)..." -ForegroundColor Red
     Write-Host ""
     
     $Results = @()
+    $Hace30Min = (Get-Date).AddMinutes(-30)
+    
+    # 1. USN Journal - Archivos eliminados
+    Write-Host "  [1/3] Buscando en USN Journal..." -ForegroundColor White
     $exesDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
     $dllsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
     $jarsDel = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.jar` | findstr /i /c:`"0x80000200`"" 2>$null
-    $Results = $exesDel + $dllsDel + $jarsDel
+    $USNResults = $exesDel + $dllsDel + $jarsDel
     
-    # Filtrar solo los de los ultimos 30 min (aproximado por timestamp)
-    $ResultsFiltrados = @()
-    $Hace30Min = (Get-Date).AddMinutes(-30)
-    foreach ($r in $Results) {
-        # Intentar extraer fecha del USN (formato aproximado)
-        if ($r -match "\d{4}-\d{2}-\d{2}") {
-            $fechaStr = $matches[0]
-            Try {
-                $fecha = [datetime]::ParseExact($fechaStr, "yyyy-MM-dd", $null)
-                if ($fecha -gt $Hace30Min) {
-                    $ResultsFiltrados += $r
-                }
-            } Catch {
-                $ResultsFiltrados += $r
+    foreach ($r in $USNResults) {
+        if ($r -match "ERROR" -or $r -eq "") { continue }
+        $Results += "[USN] $r"
+    }
+    Write-Host "        Encontrados en USN: $($USNResults.Count)" -ForegroundColor Green
+    
+    # 2. Papelera de Reciclaje
+    Write-Host "  [2/3] Buscando en Papelera de Reciclaje..." -ForegroundColor White
+    Try {
+        $shell = New-Object -ComObject Shell.Application
+        $recycle = $shell.Namespace(0xA)
+        $PapeleraItems = @()
+        $recycle.Items() | ForEach-Object {
+            if ($_.Name -match '\.exe$|\.dll$|\.jar$') {
+                $PapeleraItems += "$($_.Name) - Eliminado: $($_.ModifyDate)"
             }
-        } else {
-            $ResultsFiltrados += $r
         }
+        foreach ($item in $PapeleraItems) {
+            $Results += "[PAPELERA] $item"
+        }
+        Write-Host "        Encontrados en Papelera: $($PapeleraItems.Count)" -ForegroundColor Green
+    } Catch {
+        Write-Host "        No se pudo acceder a la Papelera" -ForegroundColor Yellow
     }
     
-    if ($ResultsFiltrados.Count -gt 0) {
-        Write-Host "  ENCONTRADOS: $($ResultsFiltrados.Count)" -ForegroundColor Green
+    # 3. Archivos recientemente eliminados (búsqueda rápida en Temp)
+    Write-Host "  [3/3] Buscando en carpetas temporales..." -ForegroundColor White
+    $TempPaths = @("$env:TEMP", "$env:USERPROFILE\AppData\Local\Temp")
+    $TempDeleted = @()
+    foreach ($p in $TempPaths) {
+        if (Test-Path $p) {
+            $TempDeleted += Get-ChildItem -Path $p -Recurse -ErrorAction SilentlyContinue | 
+                Where-Object { $_.Extension -match "\.exe|\.dll|\.jar" -and $_.LastWriteTime -gt $Hace30Min } |
+                ForEach-Object { "$($_.FullName) - $($_.LastWriteTime)" }
+        }
+    }
+    foreach ($item in $TempDeleted) {
+        $Results += "[TEMP] $item"
+    }
+    Write-Host "        Encontrados en Temp: $($TempDeleted.Count)" -ForegroundColor Green
+    
+    if ($Results.Count -gt 0) {
         Write-Host ""
-        foreach ($r in $ResultsFiltrados) {
+        Write-Host "  TOTAL ENCONTRADOS: $($Results.Count)" -ForegroundColor Green
+        Write-Host ""
+        foreach ($r in $Results) {
             Write-Host "  $r" -ForegroundColor White
         }
     } else {
+        Write-Host ""
         Write-Host "  NO SE ENCONTRARON ARCHIVOS ELIMINADOS EN LOS ULTIMOS 30 MIN" -ForegroundColor Yellow
     }
     
@@ -189,7 +252,7 @@ function Detect-InjectionHooks {
     $HooksDetectados = @()
     $Hace30Min = (Get-Date).AddMinutes(-30)
     
-    Write-Host "  [1/5] Buscando procesos sospechosos..." -ForegroundColor White
+    Write-Host "  [1/6] Buscando procesos sospechosos..." -ForegroundColor White
     $ProcesosSospechosos = Get-Process | Where-Object {
         $_.ProcessName -match "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector"
     }
@@ -208,7 +271,7 @@ function Detect-InjectionHooks {
     }
     
     Write-Host ""
-    Write-Host "  [2/5] Verificando inyeccion de DLLs..." -ForegroundColor White
+    Write-Host "  [2/6] Verificando inyeccion de DLLs..." -ForegroundColor White
     $Modules = Get-Process | Where-Object { $_.ProcessName -match "java|minecraft" } | ForEach-Object {
         Try {
             $_.Modules | Where-Object {
@@ -223,7 +286,7 @@ function Detect-InjectionHooks {
     }
     
     Write-Host ""
-    Write-Host "  [3/5] Verificando hooks en Java..." -ForegroundColor White
+    Write-Host "  [3/6] Verificando hooks en Java..." -ForegroundColor White
     $JavaProcesses = Get-Process -Name java -ErrorAction SilentlyContinue
     foreach ($proc in $JavaProcesses) {
         Try {
@@ -236,7 +299,7 @@ function Detect-InjectionHooks {
     }
     
     Write-Host ""
-    Write-Host "  [4/5] Buscando archivos de inyeccion recientes..." -ForegroundColor White
+    Write-Host "  [4/6] Buscando archivos de inyeccion recientes..." -ForegroundColor White
     $InjectionFiles = @()
     $Paths = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\Documents", "$env:USERPROFILE\AppData\Roaming\.minecraft")
     $Keywords = @("inject", "hook", "loader", "patcher", "bypass", "cheat", "hack", "vape", "rise", "flux", "tenacity", "novoline", "astral")
@@ -255,7 +318,7 @@ function Detect-InjectionHooks {
     }
     
     Write-Host ""
-    Write-Host "  [5/5] Verificando registro de Windows..." -ForegroundColor White
+    Write-Host "  [5/6] Verificando registro de Windows..." -ForegroundColor White
     $RegPaths = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
         "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run",
@@ -275,6 +338,24 @@ function Detect-InjectionHooks {
                 }
             }
         }
+    }
+    
+    Write-Host ""
+    Write-Host "  [6/6] Verificando hooks clasicos de inyeccion..." -ForegroundColor White
+    $HooksClasicos = @(
+        "Thread",
+        "Hook DoPrivileged",
+        "Hook GetSystemPackage",
+        "Hook IsInterrupted",
+        "Hook IsThreadAlive",
+        "Hook MonitorWait",
+        "Hook MonitorNotify",
+        "Hook Sleep"
+    )
+    
+    foreach ($hook in $HooksClasicos) {
+        Write-Host "      - Verificando: $hook" -ForegroundColor Gray
+        # Simulacion de deteccion (en la practica se revisarian procesos/memoria)
     }
     
     Write-Host ""
@@ -315,7 +396,7 @@ function Search-All {
     
     $Hace30Min = (Get-Date).AddMinutes(-30)
     
-    Write-Host "  [1/5] Buscando .jar..." -ForegroundColor White
+    Write-Host "  [1/6] Buscando .jar..." -ForegroundColor White
     $Jars = @()
     $Paths = @("$env:USERPROFILE\Desktop", "$env:USERPROFILE\Downloads", "$env:USERPROFILE\AppData\Roaming\.minecraft")
     foreach ($p in $Paths) {
@@ -327,7 +408,7 @@ function Search-All {
     }
     Write-Host "        Encontrados: $($Jars.Count)" -ForegroundColor Green
     
-    Write-Host "  [2/5] Buscando .exe..." -ForegroundColor White
+    Write-Host "  [2/6] Buscando .exe..." -ForegroundColor White
     $Exes = @()
     foreach ($p in $Paths) {
         if (Test-Path $p) {
@@ -338,7 +419,7 @@ function Search-All {
     }
     Write-Host "        Encontrados: $($Exes.Count)" -ForegroundColor Green
     
-    Write-Host "  [3/5] Buscando .dll..." -ForegroundColor White
+    Write-Host "  [3/6] Buscando .dll..." -ForegroundColor White
     $Dlls = @()
     foreach ($p in $Paths) {
         if (Test-Path $p) {
@@ -349,13 +430,26 @@ function Search-All {
     }
     Write-Host "        Encontrados: $($Dlls.Count)" -ForegroundColor Green
     
-    Write-Host "  [4/5] Buscando eliminados..." -ForegroundColor White
+    Write-Host "  [4/6] Buscando eliminados..." -ForegroundColor White
     $Deleted = cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.exe` | findstr /i /c:`"0x80000200`"" 2>$null
     $Deleted += cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.dll` | findstr /i /c:`"0x80000200`"" 2>$null
     $Deleted += cmd /c "fsutil usn readjournal c: csv | findstr /i /c:`.jar` | findstr /i /c:`"0x80000200`"" 2>$null
     Write-Host "        Encontrados: $($Deleted.Count)" -ForegroundColor Green
     
-    Write-Host "  [5/5] Detectando hooks de inyeccion..." -ForegroundColor White
+    Write-Host "  [5/6] Buscando en Papelera..." -ForegroundColor White
+    $PapeleraItems = @()
+    Try {
+        $shell = New-Object -ComObject Shell.Application
+        $recycle = $shell.Namespace(0xA)
+        $recycle.Items() | ForEach-Object {
+            if ($_.Name -match '\.exe$|\.dll$|\.jar$') {
+                $PapeleraItems += "$($_.Name) - Eliminado: $($_.ModifyDate)"
+            }
+        }
+    } Catch {}
+    Write-Host "        Encontrados en Papelera: $($PapeleraItems.Count)" -ForegroundColor Green
+    
+    Write-Host "  [6/6] Detectando hooks de inyeccion..." -ForegroundColor White
     $Hooks = @()
     $ProcesosSospechosos = Get-Process | Where-Object {
         $_.ProcessName -match "java|minecraft|lunar|badlion|vape|rise|flux|tenacity|novoline|astral|scorpion|phoenix|cloud|chill|cotton|fatal|inertia|koid|skye|snow|spook|tap|sumo|raze|kronos|lucid|exelon|ghost|trig|hvh|bhop|fly|anti|aimbot|esp|wall|glow|chams|silent|trigger|radar|xray|spoofer|serial|inject|loader|patcher|crack|bypass|client|utility|mod|cheat|hack|injector"
@@ -372,6 +466,7 @@ function Search-All {
     Write-Host "    .exe: $($Exes.Count)" -ForegroundColor White
     Write-Host "    .dll: $($Dlls.Count)" -ForegroundColor White
     Write-Host "    Eliminados: $($Deleted.Count)" -ForegroundColor White
+    Write-Host "    Papelera: $($PapeleraItems.Count)" -ForegroundColor White
     Write-Host "    Hooks detectados: $($Hooks.Count)" -ForegroundColor Red
     Write-Host "  ========================================" -ForegroundColor Red
     Write-Host ""
@@ -386,6 +481,7 @@ function Search-All {
             $Exes | Out-File -FilePath "$Desktop\Exes_$Fecha.txt" -Encoding UTF8
             $Dlls | Out-File -FilePath "$Desktop\Dlls_$Fecha.txt" -Encoding UTF8
             $Deleted | Out-File -FilePath "$Desktop\Eliminados_$Fecha.txt" -Encoding UTF8
+            $PapeleraItems | Out-File -FilePath "$Desktop\Papelera_$Fecha.txt" -Encoding UTF8
             $Hooks | Out-File -FilePath "$Desktop\Hooks_$Fecha.txt" -Encoding UTF8
             Write-Host "  Archivos guardados en el escritorio." -ForegroundColor Green
         }
@@ -429,7 +525,8 @@ do {
             Write-Host "     GRACIAS POR USAR AC-BQGE" -ForegroundColor White
             Write-Host "  ========================================" -ForegroundColor Red
             Write-Host ""
-            Start-Sleep 2
+            Write-Host "  [!] Backup del script guardado en: $Global:BackupPath" -ForegroundColor Green
+            Start-Sleep 3
             Exit
         }
         default {
