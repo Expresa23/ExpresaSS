@@ -1,7 +1,6 @@
 #AC-BQGE MINECRAFT FORENSIC v2.0
 #ANTI-BYPASS ACTIVO | 16 CAPAS | 500+ CLIENTES DETECTADOS
 #Windows 10/11 + Linux (WSL) | Herramientas externas integradas
-#============================================================
 $ErrorActionPreference="SilentlyContinue"
 $Global:ModoSigiloso=$false
 $Global:LogFile=$null
@@ -19,9 +18,6 @@ $Global:HasWSL=$false
 $Global:WSLDistro=""
 try{$Global:ScriptHashBase=(Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash}catch{$Global:ScriptHashBase="NO_DISPONIBLE"}
 
-#============================================================
-#SECCION 0: DETECCION DE SISTEMA OPERATIVO
-#============================================================
 function Initialize-System {
     $os=[System.Environment]::OSVersion
     $Global:OSBuild=$os.Version.Build
@@ -32,9 +28,6 @@ function Initialize-System {
     if(-not(Test-Path $Global:TempToolsPath)){New-Item -ItemType Directory -Path $Global:TempToolsPath -Force|Out-Null}
 }
 
-#============================================================
-#SECCION 1: HERRAMIENTAS EXTERNAS (descarga automatica)
-#============================================================
 function Get-ExternalTool {
     param([string]$ToolName,[string]$Url)
     $toolPath=Join-Path $Global:TempToolsPath $ToolName
@@ -68,9 +61,6 @@ function Initialize-Tools {
     Write-Host "  [TOOLS] $downloaded/$($tools.Count) herramientas disponibles" -ForegroundColor $(if($downloaded -ge 4){"Green"}else{"Yellow"})
 }
 
-#============================================================
-#SECCION 2: FUNCIONES AUXILIARES
-#============================================================
 function Write-Evidence {
     param([string]$Data)
     $Global:Evidencias+="[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Data"
@@ -136,10 +126,6 @@ function Show-ProgressBar {
     Write-Host "`r  [$bar] $pct% $LayerName   " -NoNewline -ForegroundColor $(if($pct -lt 50){"Yellow"}elseif($pct -lt 80){"Cyan"}else{"Green"})
     if($Current -eq $Total){Write-Host ""}
 }
-
-#============================================================
-#BASE DE DATOS DE CHEATS MINECRAFT (MEJORADA)
-#============================================================
 
 $Global:InjectionClients=@(
     "vape","vapev4","vapev3","vapelite","manthe",
@@ -651,9 +637,6 @@ $Global:CheatKeywords=@(
 
 $Global:KeywordRegex="vape|doomsday|drip|iridium|entropy|juul|whiteout|raven|koid|meteor|wurst|liquidbounce|impact|future|aristois|inertia|rusherhack|abyss|wolfram|phobos|pyro|forgehax|lambda|kami|bleachhack|3arthh4ck|fdp|seppuku|salhack|konc|envy|spicy|jello|zyklon|xulu|cheatware|crystallinqq|devilsight|reverb|lucid|inject|hook|loader|cheat|hack|bypass|selfdestruct|wipe|cleanup|rat|trojan|keylog|steal|dump|autoclick|macro|ghostclient|hackedclient|killaura|aimbot|xray|baritone|clientloader"
 
-#============================================================
-#CAPA 1: PROCESOS (MEJORADA)
-#============================================================
 function Scan-Processes {
     $results=@()
     Write-Evidence "[CAPA1] Escaneando procesos..."
@@ -711,9 +694,6 @@ function Scan-Processes {
     return $results
 }
 
-#============================================================
-#CAPA 2: MEMORIA / DLLs (MEJORADA)
-#============================================================
 function Scan-Memory {
     $results=@()
     Write-Evidence "[CAPA2] Escaneando DLLs en memoria..."
@@ -762,9 +742,6 @@ function Scan-Memory {
     return $results
 }
 
-#============================================================
-#CAPA 3: .minecraft FORENSICO (MEJORADA)
-#============================================================
 function Scan-MinecraftFolder {
     $results=@()
     Write-Evidence "[CAPA3] Escaneando .minecraft..."
@@ -932,9 +909,6 @@ function Scan-MinecraftFolder {
     return $results
 }
 
-#============================================================
-#CAPA 4: REGISTRO, SERVICIOS, TAREAS (MEJORADA)
-#============================================================
 function Scan-Registry {
     $results=@()
     Write-Evidence "[CAPA4] Escaneando registro, servicios, tareas..."
@@ -1056,9 +1030,6 @@ function Scan-Registry {
     return $results
 }
 
-#============================================================
-#CAPA 5: KERNEL (MEJORADA)
-#============================================================
 function Scan-Kernel {
     $results=@()
     Write-Evidence "[CAPA5] Escaneando kernel..."
@@ -1112,9 +1083,6 @@ function Scan-Kernel {
     return $results
 }
 
-#============================================================
-#CAPA 6: HISTORIAL DE EJECUCION (MEJORADA)
-#============================================================
 function Scan-ExecutionHistory {
     $results=@()
     Write-Evidence "[CAPA6] Escaneando historial de ejecucion..."
@@ -1245,9 +1213,6 @@ function Scan-ExecutionHistory {
     return $results
 }
 
-#============================================================
-#CAPA 7: PAPELERA + ARCHIVOS ELIMINADOS (MEJORADA)
-#============================================================
 function Scan-RecycleBinDeep {
     $results=@()
     Write-Evidence "[CAPA7] Analizando papelera y archivos eliminados..."
@@ -1311,9 +1276,6 @@ function Scan-RecycleBinDeep {
     return $results
 }
 
-#============================================================
-#CAPA 8: AMCACHE + SHIMCACHE + SRUM
-#============================================================
 function Scan-Amcache {
     $results=@()
     Write-Evidence "[CAPA8] Escaneando Amcache + ShimCache + SRUM..."
@@ -1367,9 +1329,6 @@ function Scan-Amcache {
     return $results
 }
 
-#============================================================
-#CAPA 9: NTFS FORENSIC (MFT, USN, ADS)
-#============================================================
 function Scan-NTFSForensic {
     $results=@()
     Write-Evidence "[CAPA9] Escaneando NTFS (MFT, USN, ADS)..."
@@ -1425,9 +1384,6 @@ function Scan-NTFSForensic {
     return $results
 }
 
-#============================================================
-#CAPA 10: NETWORK FORENSICS
-#============================================================
 function Scan-Network {
     $results=@()
     Write-Evidence "[CAPA10] Escaneando red (DNS, Firewall, conexiones)..."
@@ -1472,9 +1428,6 @@ function Scan-Network {
     return $results
 }
 
-#============================================================
-#CAPA 11: BROWSER FORENSICS
-#============================================================
 function Scan-BrowserForensics {
     $results=@()
     Write-Evidence "[CAPA11] Escaneando navegadores..."
@@ -1528,9 +1481,6 @@ function Scan-BrowserForensics {
     return $results
 }
 
-#============================================================
-#CAPA 12: WINDOWS DEFENDER
-#============================================================
 function Scan-Defender {
     $results=@()
     Write-Evidence "[CAPA12] Escaneando Windows Defender..."
@@ -1586,9 +1536,6 @@ function Scan-Defender {
     return $results
 }
 
-#============================================================
-#CAPA 13: USB + REMOVABLE MEDIA
-#============================================================
 function Scan-USB {
     $results=@()
     Write-Evidence "[CAPA13] Escaneando USB..."
@@ -1629,9 +1576,6 @@ function Scan-USB {
     return $results
 }
 
-#============================================================
-#CAPA 14: JUMPLIST + RECENT + SHELLBAGS
-#============================================================
 function Scan-JumpListRecent {
     $results=@()
     Write-Evidence "[CAPA14] Escaneando JumpList + Recent + ShellBags..."
@@ -1689,9 +1633,6 @@ function Scan-JumpListRecent {
     return $results
 }
 
-#============================================================
-#CAPA 15: ANTI-BYPASS (DLL hijack, fileless, VM, stego)
-#============================================================
 function Scan-AntiBypass {
     $results=@()
     Write-Evidence "[CAPA15] Escaneando anti-bypass..."
@@ -1788,9 +1729,6 @@ function Scan-AntiBypass {
     return $results
 }
 
-#============================================================
-#ANTIFORENSE
-#============================================================
 function Get-AntiForensicMarkers {
     $results=@()
     try{
@@ -1812,9 +1750,6 @@ function Get-AntiForensicMarkers {
     return $results
 }
 
-#============================================================
-#INTEGRIDAD Y BACKUP
-#============================================================
 function Test-ScriptIntegrity {
     if(-not $Global:ScriptHashBase -or $Global:ScriptHashBase -eq "NO_DISPONIBLE"){return $false}
     try{
@@ -1853,9 +1788,6 @@ function Backup-Script {
     }catch{}
 }
 
-#============================================================
-#VISUALIZACION
-#============================================================
 function Show-Results($results) {
     $layers=$results|Group-Object Tipo
     Write-Host ""
@@ -1918,9 +1850,6 @@ function Show-Results($results) {
     }
 }
 
-#============================================================
-#ORQUESTADOR
-#============================================================
 function Invoke-AllLayers {
     $allResults=@()
     $layerNames=@(
@@ -1957,9 +1886,6 @@ function Invoke-AllLayers {
     return $allResults
 }
 
-#============================================================
-#REPORTE FORENSE
-#============================================================
 function Write-ForensicReport($results) {
     $elapsed=(Get-Date)-$Global:StartTime
     $report=@"
@@ -2027,9 +1953,6 @@ function Invoke-SelfCheckLoop {
     }
 }
 
-#============================================================
-#MAIN LOOP
-#============================================================
 Initialize-System
 Initialize-Tools
 $Global:MenuActive=$true
