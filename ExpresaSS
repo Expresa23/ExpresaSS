@@ -1,38 +1,81 @@
-# AC-BQGE TERMINAL EDITION - MINECRAFT FORENSIC EDITION
-# Modo: ANTI-BYPASS ACTIVO | 7 CAPAS | 500+ CLIENTES DETECTADOS
-# ============================================
-# Detecta:
-#  - Ghost clients injectables (Vape, Doomsday, Drip, etc.)
-#  - Clientes .jar (Wurst, Meteor, LiquidBounce, Aristois, etc.)
-#  - Mods maliciosos en .minecraft/mods/
-#  - DLLs inyectadas en javaw.exe
-#  - Carpetas y archivos residuales de cheats
-#  - Self-destruct, wipe, cleanup
-#  - Papelera, prefetch, BAM, eventos
-#  - Kernel drivers, hooks
-# ============================================
+#AC-BQGE MINECRAFT FORENSIC v2.0
+#ANTI-BYPASS ACTIVO | 16 CAPAS | 500+ CLIENTES DETECTADOS
+#Windows 10/11 + Linux (WSL) | Herramientas externas integradas
+#============================================================
+$ErrorActionPreference="SilentlyContinue"
+$Global:ModoSigiloso=$false
+$Global:LogFile=$null
+$Global:ScriptHashBase=$null
+$Global:Evidencias=@()
+$Global:BackupCreated=$false
+$Global:ResultadosTotal=0
+$Global:StartTime=Get-Date
+$Global:TempToolsPath="$env:USERPROFILE\AppData\Local\Temp\_ac_tools"
+$Global:IsAdmin=$false
+$Global:OSVersion=""
+$Global:OSBuild=0
+$Global:IsWin11=$false
+$Global:HasWSL=$false
+$Global:WSLDistro=""
+try{$Global:ScriptHashBase=(Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash}catch{$Global:ScriptHashBase="NO_DISPONIBLE"}
 
-$ErrorActionPreference = "SilentlyContinue"
-$Global:ModoSigiloso = $false
-$Global:LogFile = $null
-$Global:ScriptHashBase = $null
-$Global:Resultados = @{}
-$Global:Evidencias = @()
-$Global:BackupCreated = $false
-
-try {
-    $Global:ScriptHashBase = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction Stop).Hash
-} catch { $Global:ScriptHashBase = "NO_DISPONIBLE" }
-
-function Test-Admin {
-    (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+#============================================================
+#SECCION 0: DETECCION DE SISTEMA OPERATIVO
+#============================================================
+function Initialize-System {
+    $os=[System.Environment]::OSVersion
+    $Global:OSBuild=$os.Version.Build
+    $Global:IsWin11=$Global:OSBuild -ge 22000
+    $Global:OSVersion=if($Global:IsWin11){"Windows 11"}else{"Windows 10"}
+    $Global:IsAdmin=(New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+    try{$wslOut=wsl --list --verbose 2>&1;if($wslOut -notmatch "no installed"){$Global:HasWSL=$true;$Global:WSLDistro=($wslOut|Select-String -Pattern "Ubuntu|Debian|Kali|SUSE|Fedora|Alpine|Arch|Parrot|Manjaro"|%{$_.Matches.Value}|Select-Object -First 1)}}catch{}
+    if(-not(Test-Path $Global:TempToolsPath)){New-Item -ItemType Directory -Path $Global:TempToolsPath -Force|Out-Null}
 }
 
+#============================================================
+#SECCION 1: HERRAMIENTAS EXTERNAS (descarga automatica)
+#============================================================
+function Get-ExternalTool {
+    param([string]$ToolName,[string]$Url)
+    $toolPath=Join-Path $Global:TempToolsPath $ToolName
+    if(-not(Test-Path $toolPath)){
+        try{
+            Invoke-WebRequest -Uri $Url -OutFile $toolPath -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+            Write-Evidence "[TOOLS] Descargado: $ToolName"
+        }catch{
+            Write-Evidence ("[TOOLS] Error descargando " + $ToolName + ": " + $_.Exception.Message)
+            return $null
+        }
+    }
+    return $toolPath
+}
+
+function Initialize-Tools {
+    Write-Host "  [TOOLS] Verificando herramientas externas..." -ForegroundColor Yellow
+    $tools=@(
+        @{Name="strings.exe";Url="https://live.sysinternals.com/strings.exe"},
+        @{Name="procdump.exe";Url="https://live.sysinternals.com/procdump.exe"},
+        @{Name="handle.exe";Url="https://live.sysinternals.com/handle.exe"},
+        @{Name="sigcheck.exe";Url="https://live.sysinternals.com/sigcheck.exe"},
+        @{Name="autoruns.exe";Url="https://live.sysinternals.com/autoruns.exe"},
+        @{Name="accesschk.exe";Url="https://live.sysinternals.com/accesschk.exe"}
+    )
+    $downloaded=0
+    foreach($t in $tools){
+        $path=Get-ExternalTool -ToolName $t.Name -Url $t.Url
+        if($path){$downloaded++}
+    }
+    Write-Host "  [TOOLS] $downloaded/$($tools.Count) herramientas disponibles" -ForegroundColor $(if($downloaded -ge 4){"Green"}else{"Yellow"})
+}
+
+#============================================================
+#SECCION 2: FUNCIONES AUXILIARES
+#============================================================
 function Write-Evidence {
     param([string]$Data)
-    $Global:Evidencias += "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Data"
-    if ($Global:ModoSigiloso -and $Global:LogFile) {
-        $Global:Evidencias[-1] | Out-File -FilePath $Global:LogFile -Encoding UTF8 -Append
+    $Global:Evidencias+="[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $Data"
+    if($Global:ModoSigiloso -and $Global:LogFile){
+        $Global:Evidencias[-1]|Out-File -FilePath $Global:LogFile -Encoding UTF8 -Append
     }
 }
 
@@ -46,1059 +89,697 @@ function Show-Banner {
     Write-Host " ██║  ██║╚██████╗     ██████╔╝██║  ██║╚██████╔╝███████╗" -ForegroundColor Red
     Write-Host " ╚═╝  ╚═╝ ╚═════╝     ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚══════╝" -ForegroundColor Red
     Write-Host "  ================================================" -ForegroundColor Red
-    Write-Host "     AC-BQGE MINECRAFT FORENSIC EDITION" -ForegroundColor White
+    Write-Host "     AC-BQGE MINECRAFT FORENSIC v2.0" -ForegroundColor White
     Write-Host "  ================================================" -ForegroundColor Red
-    Write-Host "  500+ CLIENTES | 7 CAPAS | ANTI-BYPASS" -ForegroundColor Yellow
-    if ($Global:ScriptHashBase -ne "NO_DISPONIBLE") {
-        Write-Host "  HASH: $($Global:ScriptHashBase.Substring(0,16))..." -ForegroundColor DarkGray
-    }
+    Write-Host "  $Global:OSVersion Build $Global:OSBuild | 16 CAPAS | 500+ CLIENTES" -ForegroundColor Yellow
+    if($Global:IsAdmin){Write-Host "  [ADMIN]" -ForegroundColor Green -NoNewline}else{Write-Host "  [USER]" -ForegroundColor Yellow -NoNewline}
+    if($Global:HasWSL){Write-Host " [WSL:$Global:WSLDistro]" -ForegroundColor Cyan -NoNewline}else{Write-Host "" -NoNewline}
+    Write-Host ""
+    if($Global:ScriptHashBase -ne "NO_DISPONIBLE"){Write-Host "  HASH: $($Global:ScriptHashBase.Substring(0,16))..." -ForegroundColor DarkGray}
     Write-Host ""
 }
 
 function Show-Menu {
     Show-Banner
-    Write-Host "  [1] Escaneo RAPIDO (procesos + memoria)" -ForegroundColor White
-    Write-Host "  [2] Escaneo COMPLETO (7 capas)" -ForegroundColor Red
-    Write-Host "  [3] .minecraft FORENSICO (mods, configs, logs)" -ForegroundColor Yellow
-    Write-Host "  [4] Papelera + archivos eliminados" -ForegroundColor White
-    Write-Host "  [5] BAM + Prefetch + Eventos" -ForegroundColor Yellow
-    Write-Host "  [6] Escaneo KERNEL (drivers, hooks)" -ForegroundColor Red
-    Write-Host "  [7] Modo SIGILOSO (output oculto)" -ForegroundColor DarkGray
-    Write-Host "  [8] DUMP completo + auto-defensa" -ForegroundColor Red
-    Write-Host "  [9] Salir" -ForegroundColor White
-    Write-Host ""
-    Write-Host "  ========================================" -ForegroundColor Red
+    Write-Host "  ╔══════════════════════════════════════════════════╗" -ForegroundColor Red
+    Write-Host "  ║        AC-BQGE MINECRAFT FORENSIC v2.0          ║" -ForegroundColor White
+    Write-Host "  ║      16 CAPAS | 500+ CLIENTES | ANTI-BYPASS     ║" -ForegroundColor White
+    Write-Host "  ╠══════════════════════════════════════════════════╣" -ForegroundColor Red
+    Write-Host "  ║ [1]  Escaneo RAPIDO (procesos+memoria)          ║" -ForegroundColor White
+    Write-Host "  ║ [2]  Escaneo COMPLETO (16 capas)                ║" -ForegroundColor Red
+    Write-Host "  ║ [3]  .minecraft FORENSICO                       ║" -ForegroundColor Yellow
+    Write-Host "  ║ [4]  Papelera + archivos eliminados             ║" -ForegroundColor White
+    Write-Host "  ║ [5]  BAM + Prefetch + Eventos + UserAssist      ║" -ForegroundColor Yellow
+    Write-Host "  ║ [6]  KERNEL (drivers, hooks, AppInit)           ║" -ForegroundColor Red
+    Write-Host "  ║ [7]  Amcache + ShimCache + SRUM                 ║" -ForegroundColor Cyan
+    Write-Host "  ║ [8]  NTFS Forensic (MFT, USN, ADS)              ║" -ForegroundColor Cyan
+    Write-Host "  ║ [9]  Network (DNS, Firewall, Conexiones)        ║" -ForegroundColor White
+    Write-Host "  ║ [10] Browser Forensics (Chrome, Edge, Firefox)   ║" -ForegroundColor White
+    Write-Host "  ║ [11] Windows Defender + exclusiones             ║" -ForegroundColor Yellow
+    Write-Host "  ║ [12] USB + Removable Media                      ║" -ForegroundColor White
+    Write-Host "  ║ [13] JumpList + Recent + ShellBags              ║" -ForegroundColor White
+    Write-Host "  ║ [14] Anti-Bypass (DLL hijack, fileless, VM)     ║" -ForegroundColor Magenta
+    Write-Host "  ║ [15] Modo SIGILOSO                              ║" -ForegroundColor DarkGray
+    Write-Host "  ║ [16] DUMP completo + auto-defensa               ║" -ForegroundColor Red
+    Write-Host "  ║ [17] Generar reporte forense                    ║" -ForegroundColor Green
+    Write-Host "  ║ [18] Salir                                      ║" -ForegroundColor White
+    Write-Host "  ╚══════════════════════════════════════════════════╝" -ForegroundColor Red
     Write-Host ""
 }
 
-# ============================================
-# BASE DE DATOS DE CHEATS MINECRAFT
-# ============================================
+function Show-ProgressBar {
+    param([int]$Current,[int]$Total,[string]$LayerName)
+    $pct=[math]::Round(($Current/$Total)*100)
+    $filled=[math]::Round($pct/5)
+    $empty=20-$filled
+    $bar=("="*"$filled")+("-"*"$empty")
+    Write-Host "`r  [$bar] $pct% $LayerName   " -NoNewline -ForegroundColor $(if($pct -lt 50){"Yellow"}elseif($pct -lt 80){"Cyan"}else{"Green"})
+    if($Current -eq $Total){Write-Host ""}
+}
 
-# CLIENTES INYECTABLES (ghost clients, .exe injector + .dll)
-$Global:InjectionClients = @(
-    "vape", "vapev4", "vapev3", "vapelite", "manthe",
-    "doomsday", "doomday", "doomsdayclient",
-    "drip", "dripclient", "drip.gg",
-    "iridium", "iridiumclient",
-    "entropy", "entropyclient",
-    "juul", "juulclient",
-    "whiteout", "whiteoutclient",
-    "raven", "ravenb+", "ravenbplus",
-    "roseclient", "rose",
-    "koid", "koidclient",
-    "explicit", "explicitclient",
-    "foodbyte", "foodbyteclient",
-    "uboa", "uboaclient",
-    "slapp", "slappclient",
-    "stern", "sternclient",
-    "ploww", "ploow", "plowwclient",
-    "gucci", "gucciclient",
-    "itami", "itamiclient",
-    "myno", "mynoclient",
-    "yagami", "yagamiclient",
-    "skyfall", "skyfallclient",
-    "phantom", "phantomclient",
-    "cuckold", "cuckoldclient",
-    "devilsight", "devilsightclient",
-    "reverb", "reverbclient",
-    "oath", "oathclient",
-    "lucid", "lucidclient",
-    "tapes", "tapesclient",
-    "millennium", "millenniumclient",
-    "phi", "phiclient",
-    "klientus", "klientus",
-    "crystalware", "crystalware",
-    "tenacity", "tenacityclient",
-    "novoline", "novolineclient",
-    "astral", "astralclient",
-    "fluxclient", "flux",
-    "riseclient", "rise",
-    "sumoclient", "sumo",
-    "exelon", "exelonclient",
-    "skye", "skyeclient",
-    "snowclient", "snow",
-    "spookclient", "spook",
-    "tapclient", "tap",
-    "razeclient", "raze",
-    "kronosclient", "kronos",
-    "lucidclient", "lucid",
-    "trigclient", "trig",
-    "cryclient", "cry",
-    "quantumclient", "quantum",
-    "spryclient", "spry",
-    "mercuryclient", "mercury",
-    "nebula", "nebulaclient",
-    "nostalgia", "nostalgiaclient",
-    "epsilon", "epsilonclient",
-    "basedclient", "based",
-    "breeze", "breezeclient",
-    "cluster", "clusterclient",
-    "candy", "candyclient",
-    "voidclient", "void",
-    "crackedclient", "cracked",
-    "crashclient", "crash",
-    "senseclient", "sense",
-    "purpledclient", "purpled",
-    "labyclient", "laby",
-    "projectwing", "projectwing",
-    "captivate", "captivateclient"
+#============================================================
+#BASE DE DATOS DE CHEATS MINECRAFT (MEJORADA)
+#============================================================
+
+$Global:InjectionClients=@(
+    "vape","vapev4","vapev3","vapelite","manthe",
+    "doomsday","doomday","doomsdayclient",
+    "drip","dripclient","drip.gg",
+    "iridium","iridiumclient",
+    "entropy","entropyclient",
+    "juul","juulclient",
+    "whiteout","whiteoutclient",
+    "raven","ravenb+","ravenbplus",
+    "roseclient","rose",
+    "koid","koidclient",
+    "explicit","explicitclient",
+    "foodbyte","foodbyteclient",
+    "uboa","uboaclient",
+    "slapp","slappclient",
+    "stern","sternclient",
+    "ploww","ploow","plowwclient",
+    "gucci","gucciclient",
+    "itami","itamiclient",
+    "myno","mynoclient",
+    "yagami","yagamiclient",
+    "skyfall","skyfallclient",
+    "phantom","phantomclient",
+    "cuckold","cuckoldclient",
+    "devilsight","devilsightclient",
+    "reverb","reverbclient",
+    "oath","oathclient",
+    "lucid","lucidclient",
+    "tapes","tapesclient",
+    "millennium","millenniumclient",
+    "phi","phiclient",
+    "klientus","klientus",
+    "crystalware","crystalware",
+    "tenacity","tenacityclient",
+    "novoline","novolineclient",
+    "astral","astralclient",
+    "fluxclient","flux",
+    "riseclient","rise",
+    "sumoclient","sumo",
+    "exelon","exelonclient",
+    "skye","skyeclient",
+    "snowclient","snow",
+    "spookclient","spook",
+    "tapclient","tap",
+    "razeclient","raze",
+    "kronosclient","kronos",
+    "trigclient","trig",
+    "cryclient","cry",
+    "quantumclient","quantum",
+    "spryclient","spry",
+    "mercuryclient","mercury",
+    "nebula","nebulaclient",
+    "nostalgia","nostalgiaclient",
+    "epsilon","epsilonclient",
+    "basedclient","based",
+    "breeze","breezeclient",
+    "cluster","clusterclient",
+    "candy","candyclient",
+    "voidclient","void",
+    "crackedclient","cracked",
+    "crashclient","crash",
+    "senseclient","sense",
+    "purpledclient","purpled",
+    "labyclient","laby",
+    "projectwing","projectwing",
+    "captivate","captivateclient",
+    "apollyon","apollyonclient",
+    "ananta","antanaclient",
+    "baseclient","bonkutility",
+    "bussinutilitesredux","dragon7.0",
+    "hypnotic1.19","mercury1.12.2",
+    "pandora0.3","oblivion0.3",
+    "proton1.2","nutgodb5.3",
+    "konc2.1.1","atom0.5","atombeta1.3",
+    "bonk0.1.1","hamsterv1","hearse0.5",
+    "pikahackb9"
 )
 
-# CLIENTES .jar / MODS (Wurst, Meteor, LiquidBounce, etc.)
-$Global:JarClients = @(
-    # Wurst family
-    "wurst", "wurstclient", "wurst+", "wurstplus", "wurst+2", "wurst+3",
-    # Meteor family
-    "meteorclient", "meteor",
-    # LiquidBounce family
-    "liquidbounce", "liquidbounce+", "liquidbounceplus", "liquidbounce++",
-    # Impact
-    "impactclient", "impact",
-    # Future
-    "futureclient", "future",
-    # Aristois
+$Global:JarClients=@(
+    "wurst","wurstclient","wurst+","wurstplus","wurst+2","wurst+3",
+    "meteorclient","meteor",
+    "liquidbounce","liquidbounce+","liquidbounceplus","liquidbounce++",
+    "impactclient","impact",
+    "futureclient","future",
     "aristois",
-    # Inertia (formerly WWE)
-    "inertia", "inertiaclient", "wweclient",
-    # RusherHack
-    "rusherhack", "rusher",
-    # Abyss
-    "abyssclient", "abyss",
-    # Wolfram
-    "wolframclient", "wolfram",
-    # Phobos
-    "phobosclient", "phobos",
-    # Pyro
-    "pyroclient", "pyro",
-    # ForgeHax
-    "forgehax", "forgehaxclient",
-    # Lambda
-    "lambdaclient", "lambda",
-    # Kami Blue
-    "kamiblue", "kami",
-    # BleachHack
+    "inertia","inertiaclient","wweclient",
+    "rusherhack","rusher",
+    "abyssclient","abyss",
+    "wolframclient","wolfram",
+    "phobosclient","phobos",
+    "pyroclient","pyro",
+    "forgehax","forgehaxclient",
+    "lambdaclient","lambda",
+    "kamiblue","kami",
     "bleachhack",
-    # HackHack / 3arthh4ck
-    "3arthh4ck", "earthhack", "hackhack",
-    # FDP / FDPClient
-    "fdpclient", "fdp",
-    # Scion
-    "scionclient", "scion",
-    # Seppuku
-    "seppukuclient", "seppuku",
-    # SalHack
+    "3arthh4ck","earthhack","hackhack",
+    "fdpclient","fdp",
+    "scionclient","scion",
+    "seppukuclient","seppuku",
     "salhack",
-    # KONC
-    "konc", "koncclient",
-    # Envy
-    "envyclient", "envy",
-    # Spicy
-    "spicyclient", "spicy",
-    # Zero
-    "zeroclient", "zero",
-    # Jello
-    "jelloclient", "jello",
-    # Zyklon
-    "zyklonclient", "zyklon",
-    # Gilded
-    "gildedclient", "gilded",
-    # NightClient
-    "nightclient", "night",
-    "nightxclient", "nightx",
-    # Xulu
-    "xuluclient", "xulu",
-    "06dware", "06dware",
-    # BussinUtilites
-    "bussinutilites", "bussin",
-    # Atom / AtomBeta
-    "atomclient", "atomhack",
-    # BonkWare
-    "bonk", "bonkware",
-    # Caesium
-    "caesium", "caesiumclient",
-    # Cake client
-    "cakeclient", "cake",
-    # Caprice
-    "capriceclient", "caprice",
-    # CheatWare
+    "konc","koncclient",
+    "envyclient","envy",
+    "spicyclient","spicy",
+    "zeroclient","zero",
+    "jelloclient","jello",
+    "zyklonclient","zyklon",
+    "gildedclient","gilded",
+    "nightclient","night",
+    "nightxclient","nightx",
+    "xuluclient","xulu",
+    "06dware","bussinutilites",
+    "atomclient","atomhack",
+    "bonk","bonkware",
+    "caesium","caesiumclient",
+    "cakeclient","cake",
+    "capriceclient","caprice",
     "cheatware",
-    # Cherry client
-    "cherryclient", "cherry",
-    # Clean client
-    "cleanclient", "clean",
-    # ClickCrystal
+    "cherryclient","cherry",
+    "cleanclient","clean",
     "clickcrystal",
-    # Clueless
-    "cluelessclient", "clueless",
-    # CookieClient
-    "cookieclient", "cookie",
-    # CreepWare
+    "cluelessclient","clueless",
+    "cookieclient","cookie",
     "creepware",
-    # Crystallinqq / CrystalWare
-    "crystallinqq", "crystalware",
-    # Diablo client
-    "diabloclient", "diablo",
-    # Dilhack
+    "crystallinqq","crystalware",
+    "diabloclient","diablo",
     "dilhack",
-    # DragonClient
-    "dragonclient", "dragon",
-    # DVA (DVA)
-    "dvaclient", "dva",
-    # Encrypted client
-    "encryptedclient", "encrypted",
-    # Euphoria
-    "euphoriaclient", "euphoria",
-    # Evest
-    "evestclient", "evest",
-    # FanClient
-    "fanclient", "fan",
-    # Fatal
-    "fatalclient", "fatal",
-    # Fern client
-    "fernclient", "fern",
-    # Fluttershy
-    "fluttershyclient", "fluttershy",
-    # Frost
-    "frostclient", "frost",
-    # Fusion
-    "fusionclient", "fusion",
-    # Gamesense / GS
-    "gamesense", "gsplusplus",
-    # GhostXP
-    "ghostxp", "ghostxpclient",
-    # Gloom
-    "gloomclient", "gloom",
-    # HaXClient
-    "haxclient", "hax",
-    # Hamster client
-    "hamsterclient", "hamster",
-    # Hearse
-    "hearse", "hearseclient",
-    # Heaven
-    "heavenclient", "heaven",
-    # Hush client
-    "hushclient", "hush",
-    # Hypnotic
-    "hypnoticclient", "hypnotic",
-    # Icarus
-    "icarusclient", "icarus",
-    # ICU
-    "icuclient", "icu",
-    # Inside client
-    "insideclient", "inside",
-    # Insinuation
-    "insinuation", "insinuationclient",
-    # Intimidation
-    "intimidationclient", "intimidation",
-    # Iris
-    "irisclient", "iris",
-    # Ivory
-    "ivoryclient", "ivory",
-    # JigSaw
-    "jigsawclient", "jigsaw",
-    # Joy client
-    "joyclient", "joy",
-    # July client
-    "julyclient", "july",
-    # Kakui
-    "kakuiclient", "kakui",
-    # Karambit
-    "karambitclient", "karambit",
-    # Katclient
-    "katclient", "kat",
-    # Ketamine
-    "ketamineclient", "ketamine",
-    # Kingdom
-    "kingdomclient", "kingdom",
-    # Kitsune
-    "kitsuneclient", "kitsune",
-    # KoZ client
-    "kozclient", "koz",
-    # Leaked client
+    "dragonclient","dragon",
+    "dvaclient","dva",
+    "encryptedclient","encrypted",
+    "euphoriaclient","euphoria",
+    "evestclient","evest",
+    "fanclient","fan",
+    "fatalclient","fatal",
+    "fernclient","fern",
+    "fluttershyclient","fluttershy",
+    "frostclient","frost",
+    "fusionclient","fusion",
+    "gamesense","gsplusplus",
+    "ghostxp","ghostxpclient",
+    "gloomclient","gloom",
+    "haxclient","hax",
+    "hamsterclient","hamster",
+    "hearse","hearseclient",
+    "heavenclient","heaven",
+    "hushclient","hush",
+    "hypnoticclient","hypnotic",
+    "icarusclient","icarus",
+    "icuclient","icu",
+    "insideclient","inside",
+    "insinuation","insinuationclient",
+    "intimidationclient","intimidation",
+    "irisclient","iris",
+    "ivoryclient","ivory",
+    "jigsawclient","jigsaw",
+    "joyclient","joy",
+    "julyclient","july",
+    "kakuiclient","kakui",
+    "karambitclient","karambit",
+    "katclient","kat",
+    "ketamineclient","ketamine",
+    "kingdomclient","kingdom",
+    "kitsuneclient","kitsune",
+    "kozclient","koz",
     "leakedclient",
-    # Leux
-    "leuxclient", "leux",
-    # Lithium
-    "lithiumclient", "lithium",
-    # Loom
-    "loomclient", "loom",
-    # Lord client
-    "lordclient", "lord",
-    # Lunar (not the legit one)
-    "lunarsense", "lunarclientcheat",
-    # Maniac
-    "maniacclient", "maniac",
-    # Midnight
-    "midnightclient", "midnight",
-    # Mock client
-    "mockclient", "mock",
-    # Moon client
-    "moonclient", "moon",
-    # Moonlight
-    "moonlightclient", "moonlight",
-    # MS client
+    "leuxclient","leux",
+    "lithiumclient","lithium",
+    "loomclient","loom",
+    "lordclient","lord",
+    "lunarsense","lunarclientcheat",
+    "maniacclient","maniac",
+    "midnightclient","midnight",
+    "mockclient","mock",
+    "moonclient","moon",
+    "moonlightclient","moonlight",
     "msclient",
-    # Mutant
-    "mutantclient", "mutant",
-    # Nautilus
-    "nautilusclient", "nautilus",
-    # Nexus
-    "nexusclient", "nexus",
-    # NightX
-    "nightxclient", "nightx",
-    # Nocturnal
-    "nocturnalclient", "nocturnal",
-    # Nodus
-    "nodusclient", "nodus",
-    # NutGod
-    "nutgod", "nutgodclient",
-    # Oblivion
-    "oblivionclient", "oblivion",
-    # Omega
-    "omegaclient", "omega",
-    # Orcus
-    "orcusclient", "orcus",
-    # Pandora
-    "pandoraclient", "pandorahack",
-    # PandoraHack
-    "pandorahack",
-    # PikaHack
+    "mutantclient","mutant",
+    "nautilusclient","nautilus",
+    "nexusclient","nexus",
+    "nocturnalclient","nocturnal",
+    "nodusclient","nodus",
+    "nutgod","nutgodclient",
+    "oblivionclient","oblivion",
+    "omegaclient","omega",
+    "orcusclient","orcus",
+    "pandoraclient","pandorahack",
     "pikahack",
-    # Plasma
-    "plasmaclient", "plasma",
-    # Plexus
-    "plexusclient", "plexus",
-    # PowerRanger
-    "powerrangerclient", "powerranger",
-    # Prime
-    "primeclient", "prime",
-    # Proton
-    "protonclient", "proton",
-    # Qubit
-    "qubitclient", "qubit",
-    # Radium
-    "radiumclient", "radium",
-    # RedX
-    "redxclient", "redx",
-    # Rekt
-    "rektclient", "rekt",
-    # Reliant
-    "reliantclient", "reliant",
-    # Remove
-    "removeclient", "remove",
-    # Resolute
-    "resoluteclient", "resolute",
-    # Resilience
-    "resilienceclient", "resilience",
-    # Sakura
-    "sakuragaclient", "sakura",
-    # Sane client
-    "saneclient", "sane",
-    # Satan client
-    "satanclient", "satan",
-    # Seth client
-    "sethclient", "seth",
-    # Seth client
-    "seth",
-    # Sick client
-    "sickclient", "sick",
-    # Silent client
-    "silentclient", "silent",
-    # Sin client
-    "sinclient", "sin",
-    # Sirius
-    "siriusclient", "sirius",
-    # Sixth client
-    "sixthclient", "sixth",
-    # Sk1TT client
-    "sk1ttclient", "sk1tt",
-    # Sketched
-    "sketchedclient", "sketched",
-    # Skill client
-    "skillclient", "skill",
-    # Skyline
-    "skylineclient", "skyline",
-    # Slice client
-    "sliceclient", "slice",
-    # Slick client
-    "slickclient", "slick",
-    # SnowFallen
-    "snowfallenclient", "snowfallen",
-    # Sol client
-    "solclient", "sol",
-    # Spark client
-    "sparkclient", "spark",
-    # Sparky
-    "sparkyclient", "sparky",
-    # Stack client
-    "stackclient", "stack",
-    # Storm client
-    "stormclient", "storm",
-    # Stubborn
-    "stubbornclient", "stubborn",
-    # Swag client
-    "swagclient", "swag",
-    # Syot client
-    "syotclient", "syot",
-    # Tapeless
-    "tapelessclient", "tapeless",
-    # Thei
-    "theiclient", "thei",
-    # Threshold
-    "thresholdclient", "threshold",
-    # Tom client
-    "tomclient", "tom",
-    # Torture client
-    "tortureclient", "torture",
-    # Trance
-    "tranceclient", "trance",
-    # Trash client
-    "trashclient", "trash",
-    # Tribe client
-    "tribeclient", "tribe",
-    # Trick client
-    "trickclient", "trick",
-    # TriHard
-    "trihardclient", "trihard",
-    # TrollHack
+    "plasmaclient","plasma",
+    "plexusclient","plexus",
+    "powerrangerclient","powerranger",
+    "primeclient","prime",
+    "protonclient","proton",
+    "qubitclient","qubit",
+    "radiumclient","radium",
+    "redxclient","redx",
+    "rektclient","rekt",
+    "reliantclient","reliant",
+    "removeclient","remove",
+    "resoluteclient","resolute",
+    "resilienceclient","resilience",
+    "sakuragaclient","sakura",
+    "saneclient","sane",
+    "satanclient","satan",
+    "sethclient","seth",
+    "sickclient","sick",
+    "silentclient","silent",
+    "sinclient","sin",
+    "siriusclient","sirius",
+    "sixthclient","sixth",
+    "sk1ttclient","sk1tt",
+    "sketchedclient","sketched",
+    "skillclient","skill",
+    "skylineclient","skyline",
+    "sliceclient","slice",
+    "slickclient","slick",
+    "snowfallenclient","snowfallen",
+    "solclient","sol",
+    "sparkclient","spark",
+    "sparkyclient","sparky",
+    "stackclient","stack",
+    "stormclient","storm",
+    "stubbornclient","stubborn",
+    "swagclient","swag",
+    "syotclient","syot",
+    "tapelessclient","tapeless",
+    "theiclient","thei",
+    "thresholdclient","threshold",
+    "tomclient","tom",
+    "tortureclient","torture",
+    "tranceclient","trance",
+    "trashclient","trash",
+    "tribeclient","tribe",
+    "trickclient","trick",
+    "trihardclient","trihard",
     "trollhack",
-    # Turbo client
-    "turboclient", "turbo",
-    # UM client
-    "umclient", "um",
-    # Unbreakable
-    "unbreakableclient", "unbreakable",
-    # Valor client
-    "valorclient", "valor",
-    # Vanity
-    "vanityclient", "vanity",
-    # Verity
-    "verityclient", "verity",
-    # Vertex
-    "vertexclient", "vertex",
-    # Veto client
-    "vetoclient", "veto",
-    # Vigil client
-    "vigilclient", "vigil",
-    # Vile client
-    "vileclient", "vile",
-    # Vulture
-    "vultureclient", "vulture",
-    # Wave client
-    "waveclient", "wave",
-    # WeedHack
-    "weedhack", "weedhack",
-    # Weep client
-    "weepclient", "weep",
-    # Whiz client
-    "whizclient", "whiz",
-    # Winter client
-    "winterclient", "winter",
-    # Xeno (formerly Mint)
-    "xenoclient", "xeno", "mintclient",
-    # Xero
-    "xeroclient", "xero",
-    # Xylitol
-    "xylitolclient", "xylitol",
-    # Yasashii
-    "yasashiiclient", "yasashii",
-    # Z4kk client
-    "z4kkclient", "z4kk",
-    # Zamorozka
+    "turboclient","turbo",
+    "umclient","um",
+    "unbreakableclient","unbreakable",
+    "valorclient","valor",
+    "vanityclient","vanity",
+    "verityclient","verity",
+    "vertexclient","vertex",
+    "vetoclient","veto",
+    "vigilclient","vigil",
+    "vileclient","vile",
+    "vultureclient","vulture",
+    "waveclient","wave",
+    "weedhack",
+    "weepclient","weep",
+    "whizclient","whiz",
+    "winterclient","winter",
+    "xenoclient","xeno","mintclient",
+    "xeroclient","xero",
+    "xylitolclient","xylitol",
+    "yasashiiclient","yasashii",
+    "z4kkclient","z4kk",
     "zamorozka",
-    # Zealot
-    "zealotclient", "zealot",
-    # Zues client
-    "zuesclient", "zues",
-    # 303Hack / ThreeZeroThreeHack
-    "303hack", "threezerothree",
-    # 404 client
+    "zealotclient","zealot",
+    "zuesclient","zues",
+    "303hack","threezerothree",
     "404client",
-    # 198macros
     "198macros",
-    "198macros",
-    # 1.19 client
     "1.19client",
-    # Delta
-    "deltaclient", "delta",
-    "deltahack",
-    # Excellent
-    "excellentclient", "excellent",
-    # Eternity
-    "eternityclient", "eternity",
-    # Expensive
-    "expensiveclient", "expensive",
-    # Melonity
+    "deltaclient","delta","deltahack",
+    "excellentclient","excellent",
+    "eternityclient","eternity",
+    "expensiveclient","expensive",
     "melonity",
-    # Minced
-    "mincedclient", "minced",
-    # Relake
-    "relakeclient", "relake",
-    # Rockstar client
-    "rockstarclient", "rockstarhack",
-    # Thunderhack
+    "mincedclient","minced",
+    "relakeclient","relake",
+    "rockstarclient","rockstarhack",
     "thunderhack",
-    # Troxill
-    "troxillclient", "troxill",
-    # Venus client
-    "venusclient", "venus",
-    # Verist
-    "veristclient", "verist",
-    # Wexside
-    "wexsideclient", "wexside",
-    # Nursultan
-    "nursultanclient", "nursultan",
-    # Wild client
-    "wildclient", "wild",
-    # CatLean
+    "troxillclient","troxill",
+    "venusclient","venus",
+    "veristclient","verist",
+    "wexsideclient","wexside",
+    "nursultanclient","nursultan",
+    "wildclient","wild",
     "catlean",
-    # Celestial
-    "celestialclient", "celestial",
-    # CProject
+    "celestialclient","celestial",
     "cproject",
-    # Akrien
-    "akrienclient", "akrien",
-    # Arbuz
-    "arbuzclient", "arbuz",
-    # Deadcode
-    "deadcodeclient", "deadcode",
-    # ProjectWing
-    "projectwing",
-    # Entropy
-    "entropy",
-    # Apollyon
-    "apollyonclient", "apollyon",
-    # Ananta
-    "antanaclient", "ananta",
-    # BaseClient
-    "baseclient",
-    # Bonk Utility
-    "bonkutility",
-    # BussinUtilites Redux
-    "bussinutilitesredux",
-    # Dragon 7.0
-    "dragon7.0",
-    # Hypnotic 1.19
-    "hypnotic1.19",
-    # Mercury 1.12.2
-    "mercury1.12.2",
-    # Pandora 0.3
-    "pandora0.3",
-    # Oblivion 0.3
-    "oblivion0.3",
-    # Proton 1.2
-    "proton1.2",
-    # NutGod b5.3
-    "nutgodb5.3",
-    # KONC 2.1.1
-    "konc2.1.1",
-    # Atom 0.5
-    "atom0.5",
-    # AtomBeta 1.3
-    "atombeta1.3",
-    # Bonk 0.1.1
-    "bonk0.1.1",
-    # Hamster v1
-    "hamsterv1",
-    # Hearse 0.5
-    "hearse0.5",
-    # PikaHack b9
-    "pikahackb9",
-    # Crystallinqq
-    "crystallinqq"
+    "akrienclient","akrien",
+    "arbuzclient","arbuz",
+    "deadcodeclient","deadcode"
 )
 
-# DLLs/archivos de inyeccion
-$Global:SuspDlls = @(
-    "vape", "rise", "flux", "novoline", "astral", "inject", "hook",
-    "loader", "cheat", "hack", "client", "detours", "minhook",
-    "easyhook", "mhook", "mdlhud", "opengl32", "d3d", "discordhook",
-    "xinput1_3", "ws2_32", "version", "winmm", "dbghelp",
-    "doomsday", "drip", "iridium", "entropy", "juul",
-    "whiteout", "raven", "koid", "ghostclient", "injector",
-    "selfdestruct", "wipe", "cleanup", "destroy",
-    "artemiss", "dream", "monkey", "rapid", "clicker", "macro",
-    "autoclick", "keystroke", "logitech", "ghub", "lghub",
-    "autohotkey", "autoit", "pulover", "recorder",
-    "jni", "jvmti", "instrument", "agent", "nativehook",
-    "mousehook", "keyhook", "sendinput", "mouseevent",
-    "keyevent", "inputsim", "inputsimulator"
+$Global:SuspDlls=@(
+    "vape","rise","flux","novoline","astral","inject","hook",
+    "loader","cheat","hack","client","detours","minhook",
+    "easyhook","mhook","opengl32","d3d","discordhook",
+    "xinput1_3","ws2_32","version","winmm","dbghelp",
+    "doomsday","drip","iridium","entropy","juul",
+    "whiteout","raven","koid","ghostclient","injector",
+    "selfdestruct","wipe","cleanup","destroy",
+    "dream","monkey","rapid","clicker","macro",
+    "autoclick","keystroke","logitech","ghub","lghub",
+    "autohotkey","autoit","pulover","recorder",
+    "jni","jvmti","instrument","agent","nativehook",
+    "mousehook","keyhook","sendinput","mouseevent",
+    "keyevent","inputsim","inputsimulator",
+    "dbutil","winio","winring0","gdrv","kdmapper",
+    "processhacker","procdump"
 )
 
-# ============================================
-# CARPETAS Y RUTAS FORENSICAS DE CHEATS
-# ============================================
-
-$Global:CheatFolders = @(
-    # Doomsday
-    ".doomsday", "doomsday", "DoomsDay", "doomsday-client",
-    # Wurst
-    ".wurst", "wurst", "Wurst", ".Wurst encryption",
-    # Meteor
-    ".meteor", "meteor-client", "meteorclient", "Meteor",
-    # Vape
-    ".vape", "vape", "Vape", "vape-client",
-    # LiquidBounce
-    ".liquidbounce", "liquidbounce", "LiquidBounce", ".LB",
-    # Future
-    ".future", "future", "Future", "future-client",
-    # Impact
-    ".impact", "impact", "Impact",
-    # Aristois
-    ".aristois", "aristois", "Aristois",
-    # Inertia
-    ".inertia", "inertia", "Inertia",
-    # RusherHack
-    ".rusherhack", "rusherhack", "RusherHack",
-    # Abyss
-    ".abyss", "abyss", "Abyss",
-    # Wolfram
-    ".wolfram", "wolfram", "Wolfram",
-    # Phobos
-    ".phobos", "phobos", "Phobos",
-    # Pyro
-    ".pyro", "pyro", "Pyro",
-    # ForgeHax
-    ".forgehax", "forgehax", "ForgeHax",
-    # Lambda
-    ".lambda", "lambda", "Lambda",
-    # Kami Blue
-    ".kami", "kami", "KamiBlue",
-    # BleachHack
-    ".bleachhack", "bleachhack", "BleachHack",
-    # 3arthh4ck
-    ".3arthh4ck", "3arthh4ck", "earthhack",
-    # FDP
-    ".fdp", "fdp", "FDPClient",
-    # Seppuku
-    ".seppuku", "seppuku",
-    # SalHack
-    ".salhack", "salhack",
-    # KONC
-    ".konc", "konc",
-    # Jello
-    ".jello", "jello",
-    # Zyklon
-    ".zyklon", "zyklon",
-    # NightX
-    ".nightx", "nightx",
-    # Xulu
-    ".xulu", "xulu",
-    # Cereal
-    ".cereal", "cereal",
-    # CheatWare
-    ".cheatware", "cheatware",
-    # Dragon
-    ".dragon", "dragon",
-    # Frost
-    ".frost", "frost",
-    # Fusion
-    ".fusion", "fusion",
-    # Gamesense
-    ".gamesense", "gamesense", ".gs",
-    # Gloom
-    ".gloom", "gloom",
-    # Hypnotic
-    ".hypnotic", "hypnotic",
-    # Moon
-    ".moon", "moon",
-    # Moonlight
-    ".moonlight", "moonlight",
-    # Nexus
-    ".nexus", "nexus",
-    # NightX
-    ".nightx", "nightx",
-    # Nocturnal
-    ".nocturnal", "nocturnal",
-    # Nodus
-    ".nodus", "nodus",
-    # Oblivion
-    ".oblivion", "oblivion",
-    # Omega
-    ".omega", "omega",
-    # Orcus
-    ".orcus", "orcus",
-    # Pandora
-    ".pandora", "pandora",
-    # Plasma
-    ".plasma", "plasma",
-    # Prime
-    ".prime", "prime",
-    # Proton
-    ".proton", "proton",
-    # Qubit
-    ".qubit", "qubit",
-    # Radium
-    ".radium", "radium",
-    # Resolute
-    ".resolute", "resolute",
-    # Resilience
-    ".resilience", "resilience",
-    # Sagura
-    ".sakura", "sakura",
-    # Sirius
-    ".sirius", "sirius",
-    # Skyline
-    ".skyline", "skyline",
-    # TrollHack
-    ".trollhack", "trollhack",
-    # Valor
-    ".valor", "valor",
-    # Wave
-    ".wave", "wave",
-    # WeedHack
-    ".weedhack", "weedhack",
-    # Xeno
-    ".xeno", "xeno",
-    # Yasashii
-    ".yasashii", "yasashii",
-    # Zamorozka
-    ".zamorozka", "zamorozka",
-    # Rise
-    ".rise", "rise",
-    # Flux
-    ".flux", "flux",
-    # Tenacity
-    ".tenacity", "tenacity",
-    # Novoline
-    ".novoline", "novoline",
-    # Astral
-    ".astral", "astral",
-    # Scion
-    ".scion", "scion",
-    # Envy
-    ".envy", "envy",
-    # Spicy
-    ".spicy", "spicy",
-    # Zero
-    ".zero", "zero",
-    # Gilded
-    ".gilded", "gilded",
-    # Caprice
-    ".caprice", "caprice",
-    # Clueless
-    ".clueless", "clueless",
-    # Creepware
-    ".creepware", "creepware",
-    # Dilhack
-    ".dilhack", "dilhack",
-    # Euphoria
-    ".euphoria", "euphoria",
-    # Fatal
-    ".fatal", "fatal",
-    # Heaven
-    ".heaven", "heaven",
-    # Hush
-    ".hush", "hush",
-    # Icarus
-    ".icarus", "icarus",
-    # Inside
-    ".inside", "inside",
-    # Iris
-    ".iris", "iris",
-    # Ivory
-    ".ivory", "ivory",
-    # Joy
-    ".joy", "joy",
-    # Kitsune
-    ".kitsune", "kitsune",
-    # Lithium
-    ".lithium", "lithium",
-    # Loom
-    ".loom", "loom",
-    # Midnight
-    ".midnight", "midnight",
-    # Mutant
-    ".mutant", "mutant",
-    # Nautilus
-    ".nautilus", "nautilus",
-    # Plexus
-    ".plexus", "plexus",
-    # Reliant
-    ".reliant", "reliant",
-    # Seth
-    ".seth", "seth",
-    # Silent
-    ".silent", "silent",
-    # Sin
-    ".sin", "sin",
-    # Sketched
-    ".sketched", "sketched",
-    # SnowFallen
-    ".snowfallen", "snowfallen",
-    # Threshold
-    ".threshold", "threshold",
-    # Trance
-    ".trance", "trance",
-    # Unbreakable
-    ".unbreakable", "unbreakable",
-    # Vanity
-    ".vanity", "vanity",
-    # Verity
-    ".verity", "verity",
-    # Vertex
-    ".vertex", "vertex",
-    # Vile
-    ".vile", "vile",
-    # Winter
-    ".winter", "winter",
-    # Zealot
-    ".zealot", "zealot",
-    # Zamorozka
-    ".zamorozka", "zamorozka",
-    # Crystallinqq
-    ".crystallinqq", "crystallinqq",
-    # DevilSight
-    ".devilsight", "devilsight",
-    # Reverb
-    ".reverb", "reverb",
-    # Oath
-    ".oath", "oath",
-    # Lucid
-    ".lucid", "lucid",
-    # Tapes
-    ".tapes", "tapes",
-    # Millennium
-    ".millennium", "millennium",
-    # Phi
-    ".phi", "phi",
-    # Verist
-    ".verist", "verist",
-    # Venus
-    ".venus", "venus",
-    # Melonity
-    ".melonity", "melonity",
-    # Minced
-    ".minced", "minced",
-    # Relake
-    ".relake", "relake",
-    # Thunderhack
-    ".thunderhack", "thunderhack",
-    # Troxill
-    ".troxill", "troxill",
-    # Wexside
-    ".wexside", "wexside",
-    # CatLean
-    ".catlean", "catlean",
-    # Celestial
-    ".celestial", "celestial",
-    # CProject
-    ".cproject", "cproject",
-    # Akrien
-    ".akrien", "akrien",
-    # Arbuz
-    ".arbuz", "arbuz",
-    # Deadcode
-    ".deadcode", "deadcode",
-    # Nursultan
-    ".nursultan", "nursultan",
-    # Wild
-    ".wild", "wild",
-    # Rockstar
-    ".rockstar", "rockstar",
-    # Excellent
-    ".excellent", "excellent",
-    # Eternity
-    ".eternity", "eternity",
-    # Expensive
-    ".expensive", "expensive",
-    # Delta
-    ".delta", "deltaclient",
-    # Baritone
+$Global:CheatFolders=@(
+    ".doomsday","doomsday","DoomsDay","doomsday-client",
+    ".wurst","wurst","Wurst",".Wurst encryption",
+    ".meteor","meteor-client","meteorclient","Meteor",
+    ".vape","vape","Vape","vape-client",
+    ".liquidbounce","liquidbounce","LiquidBounce",".LB",
+    ".future","future","Future","future-client",
+    ".impact","impact","Impact",
+    ".aristois","aristois","Aristois",
+    ".inertia","inertia","Inertia",
+    ".rusherhack","rusherhack","RusherHack",
+    ".abyss","abyss","Abyss",
+    ".wolfram","wolfram","Wolfram",
+    ".phobos","phobos","Phobos",
+    ".pyro","pyro","Pyro",
+    ".forgehax","forgehax","ForgeHax",
+    ".lambda","lambda","Lambda",
+    ".kami","kami","KamiBlue",
+    ".bleachhack","bleachhack","BleachHack",
+    ".3arthh4ck","3arthh4ck","earthhack",
+    ".fdp","fdp","FDPClient",
+    ".seppuku","seppuku",
+    ".salhack","salhack",
+    ".konc","konc",
+    ".jello","jello",
+    ".zyklon","zyklon",
+    ".nightx","nightx",
+    ".xulu","xulu",
+    ".cereal","cereal",
+    ".cheatware","cheatware",
+    ".dragon","dragon",
+    ".frost","frost",
+    ".fusion","fusion",
+    ".gamesense","gamesense",".gs",
+    ".gloom","gloom",
+    ".hypnotic","hypnotic",
+    ".moon","moon",
+    ".moonlight","moonlight",
+    ".nexus","nexus",
+    ".nocturnal","nocturnal",
+    ".nodus","nodus",
+    ".oblivion","oblivion",
+    ".omega","omega",
+    ".orcus","orcus",
+    ".pandora","pandora",
+    ".plasma","plasma",
+    ".prime","prime",
+    ".proton","proton",
+    ".qubit","qubit",
+    ".radium","radium",
+    ".resolute","resolute",
+    ".resilience","resilience",
+    ".sakura","sakura",
+    ".sirius","sirius",
+    ".skyline","skyline",
+    ".trollhack","trollhack",
+    ".valor","valor",
+    ".wave","wave",
+    ".weedhack","weedhack",
+    ".xeno","xeno",
+    ".yasashii","yasashii",
+    ".zamorozka","zamorozka",
+    ".rise","rise",
+    ".flux","flux",
+    ".tenacity","tenacity",
+    ".novoline","novoline",
+    ".astral","astral",
+    ".scion","scion",
+    ".envy","envy",
+    ".spicy","spicy",
+    ".zero","zero",
+    ".gilded","gilded",
+    ".caprice","caprice",
+    ".clueless","clueless",
+    ".creepware","creepware",
+    ".dilhack","dilhack",
+    ".euphoria","euphoria",
+    ".fatal","fatal",
+    ".heaven","heaven",
+    ".hush","hush",
+    ".icarus","icarus",
+    ".inside","inside",
+    ".iris","iris",
+    ".ivory","ivory",
+    ".joy","joy",
+    ".kitsune","kitsune",
+    ".lithium","lithium",
+    ".loom","loom",
+    ".midnight","midnight",
+    ".mutant","mutant",
+    ".nautilus","nautilus",
+    ".plexus","plexus",
+    ".reliant","reliant",
+    ".seth","seth",
+    ".silent","silent",
+    ".sin","sin",
+    ".sketched","sketched",
+    ".snowfallen","snowfallen",
+    ".threshold","threshold",
+    ".trance","trance",
+    ".unbreakable","unbreakable",
+    ".vanity","vanity",
+    ".verity","verity",
+    ".vertex","vertex",
+    ".vile","vile",
+    ".winter","winter",
+    ".zealot","zealot",
+    ".crystallinqq","crystallinqq",
+    ".devilsight","devilsight",
+    ".reverb","reverb",
+    ".oath","oath",
+    ".lucid","lucid",
+    ".tapes","tapes",
+    ".millennium","millennium",
+    ".phi","phi",
+    ".verist","verist",
+    ".venus","venus",
+    ".melonity","melonity",
+    ".minced","minced",
+    ".relake","relake",
+    ".thunderhack","thunderhack",
+    ".troxill","troxill",
+    ".wexside","wexside",
+    ".catlean","catlean",
+    ".celestial","celestial",
+    ".cproject","cproject",
+    ".akrien","akrien",
+    ".arbuz","arbuz",
+    ".deadcode","deadcode",
+    ".nursultan","nursultan",
+    ".wild","wild",
+    ".rockstar","rockstar",
+    ".excellent","excellent",
+    ".eternity","eternity",
+    ".expensive","expensive",
+    ".delta","deltaclient",
     "baritone",
-    # APs
-    ".aps", "aps",
-    # Skid
-    ".skid", "skid",
-    # Skidded
-    ".skidded", "skidded",
-    # Cracked
-    ".cracked", "cracked",
+    ".aps","aps",
+    ".skid","skid",
+    ".skidded","skidded",
+    ".cracked","cracked",
     "comptoir"
 )
 
-# Palabras clave para nombres de procesos y archivos
-$Global:CheatKeywords = @(
-    "vape", "rise", "flux", "tenacity", "novoline", "astral",
-    "doomsday", "doomday", "drip", "iridium", "entropy", "juul",
-    "whiteout", "raven", "koid", "explicit", "foodbyte", "uboa",
-    "slapp", "stern", "ploww", "ploow", "gucci", "itami", "myno",
-    "yagami", "skyfall", "phantom", "cuckold", "devilsight",
-    "inertia", "meteor", "wurst", "liquidbounce", "impact",
-    "future", "aristois", "rusherhack", "abyss", "wolfram",
-    "phobos", "pyro", "forgehax", "lambda", "kami",
-    "bleachhack", "3arthh4ck", "fdp", "seppuku", "salhack",
-    "konc", "envy", "spicy", "zero", "jello", "zyklon",
-    "gilded", "nightx", "xulu", "06dware", "bussinutilites",
-    "bonk", "caesium", "cake", "caprice", "cheatware", "cherry",
-    "clean", "clickcrystal", "clueless", "cookie", "creepware",
-    "crystallinqq", "diablo", "dilhack", "dva", "euphoria",
-    "evest", "fan", "fatal", "fern", "fluttershy", "frost",
-    "fusion", "gamesense", "ghostxp", "gloom", "hax", "hamster",
-    "hearse", "heaven", "hush", "hypnotic", "icarus", "icu",
-    "inside", "insinuation", "intimidation", "iris", "ivory",
-    "jigsaw", "joy", "july", "kakui", "karambit", "kat", "ketamine",
-    "kingdom", "kitsune", "koz", "leux", "lithium", "loom", "lord",
-    "maniac", "midnight", "mock", "moon", "moonlight", "mutant",
-    "nautilus", "nexus", "nocturnal", "nodus", "nutgod", "oblivion",
-    "omega", "orcus", "pandora", "pikahack", "plasma", "plexus",
-    "prime", "proton", "qubit", "radium", "redx", "rekt", "reliant",
-    "resilience", "resolute", "sakura", "sane", "satan", "seth",
-    "sick", "silent", "sin", "sirius", "sixth", "sk1tt", "sketched",
-    "skill", "skyline", "slice", "slick", "snowfallen", "sol", "spark",
-    "sparky", "stack", "storm", "stubborn", "swag", "syot", "tapeless",
-    "thei", "threshold", "tom", "torture", "trance", "trash", "tribe",
-    "trick", "trihard", "trollhack", "turbo", "um", "unbreakable",
-    "valor", "vanity", "verity", "vertex", "veto", "vigil", "vile",
-    "vulture", "wave", "weedhack", "weep", "whiz", "winter", "xeno",
-    "xero", "xylitol", "yasashii", "z4kk", "zamorozka", "zealot", "zues",
-    "303hack", "404", "198macros", "delta", "excellent", "eternity",
-    "expensive", "melonity", "minced", "relake", "rockstar",
-    "thunderhack", "troxill", "venus", "verist", "wexside",
-    "nursultan", "wild", "catlean", "celestial", "cproject",
-    "akrien", "arbuz", "deadcode", "projectwing", "reverb", "oath",
-    "lucid", "tapes", "millennium", "phi", "klientus",
-    # Terminos genericos
-    "inject", "loader", "patcher", "crack", "bypass", "cheat",
-    "hack", "injector", "selfdestruct", "wipe", "cleanup",
-    "antiforensic", "destroy", "rat", "trojan", "keylog", "spy",
-    "steal", "dump", "keygen", "macro", "autoclick", "autoclicker",
-    "clicker", "keystroke", "recorder", "sendinput", "mouseevent",
-    "ghostclient", "hackedclient", "anarchyclient",
-    # Objetos Minecraft
-    "killaura", "triggerbot", "aimbot", "aimassist", "reach",
-    "velocity", "antiknockback", "criticals", "autocrystal",
-    "crystalaura", "surround", "autotrap", "autototem", "antihunger",
-    "fly", "speed", "spider", "jesus", "bunnyhop", "nofall",
-    "timer", "blink", "phase", "freecam", "nuker", "fastplace",
-    "fastbreak", "cheststealer", "invcleaner", "inventorymanager",
-    "xray", "wallhack", "esp", "tracers", "fullbright",
-    "autosoup", "autogapple", "autoeat", "autofish",
-    "baritone", "antivoid", "antifall", "antistuck",
-    "autologin", "autoreconnect", "autorespawn",
-    "seedcracker", "elytrafly", "boatfly", "entityspeed",
-    "clickgui", "hud", "arraylist", "config"
+$Global:CheatKeywords=@(
+    "vape","rise","flux","tenacity","novoline","astral",
+    "doomsday","doomday","drip","iridium","entropy","juul",
+    "whiteout","raven","koid","explicit","foodbyte","uboa",
+    "slapp","stern","ploww","ploow","gucci","itami","myno",
+    "yagami","skyfall","phantom","cuckold","devilsight",
+    "inertia","meteor","wurst","liquidbounce","impact",
+    "future","aristois","rusherhack","abyss","wolfram",
+    "phobos","pyro","forgehax","lambda","kami",
+    "bleachhack","3arthh4ck","fdp","seppuku","salhack",
+    "konc","envy","spicy","zero","jello","zyklon",
+    "gilded","nightx","xulu","06dware","bussinutilites",
+    "bonk","caesium","cake","caprice","cheatware","cherry",
+    "clean","clickcrystal","clueless","cookie","creepware",
+    "crystallinqq","diablo","dilhack","dva","euphoria",
+    "evest","fan","fatal","fern","fluttershy","frost",
+    "fusion","gamesense","ghostxp","gloom","hax","hamster",
+    "hearse","heaven","hush","hypnotic","icarus","icu",
+    "inside","insinuation","intimidation","iris","ivory",
+    "jigsaw","joy","july","kakui","karambit","kat","ketamine",
+    "kingdom","kitsune","koz","leux","lithium","loom","lord",
+    "maniac","midnight","mock","moon","moonlight","mutant",
+    "nautilus","nexus","nocturnal","nodus","nutgod","oblivion",
+    "omega","orcus","pandora","pikahack","plasma","plexus",
+    "prime","proton","qubit","radium","redx","rekt","reliant",
+    "resilience","resolute","sakura","sane","satan","seth",
+    "sick","silent","sin","sirius","sixth","sk1tt","sketched",
+    "skill","skyline","slice","slick","snowfallen","sol","spark",
+    "sparky","stack","storm","stubborn","swag","syot","tapeless",
+    "thei","threshold","tom","torture","trance","trash","tribe",
+    "trick","trihard","trollhack","turbo","um","unbreakable",
+    "valor","vanity","verity","vertex","veto","vigil","vile",
+    "vulture","wave","weedhack","weep","whiz","winter","xeno",
+    "xero","xylitol","yasashii","z4kk","zamorozka","zealot","zues",
+    "303hack","404","198macros","delta","excellent","eternity",
+    "expensive","melonity","minced","relake","rockstar",
+    "thunderhack","troxill","venus","verist","wexside",
+    "nursultan","wild","catlean","celestial","cproject",
+    "akrien","arbuz","deadcode","projectwing","reverb","oath",
+    "lucid","tapes","millennium","phi","klientus","crystallinqq",
+    "apollyon","ananta","cereal","06dware",
+    "inject","loader","patcher","crack","bypass","cheat",
+    "hack","injector","selfdestruct","wipe","cleanup",
+    "antiforensic","destroy","rat","trojan","keylog","spy",
+    "steal","dump","keygen","macro","autoclick","autoclicker",
+    "clicker","keystroke","recorder","sendinput","mouseevent",
+    "ghostclient","hackedclient","anarchyclient",
+    "killaura","triggerbot","aimbot","aimassist","reach",
+    "velocity","antiknockback","criticals","autocrystal",
+    "crystalaura","surround","autotrap","autototem","antihunger",
+    "fly","speed","spider","jesus","bunnyhop","nofall",
+    "timer","blink","phase","freecam","nuker","fastplace",
+    "fastbreak","cheststealer","invcleaner","inventorymanager",
+    "xray","wallhack","esp","tracers","fullbright",
+    "autosoup","autogapple","autoeat","autofish",
+    "baritone","antivoid","antifall","antistuck",
+    "autologin","autoreconnect","autorespawn",
+    "seedcracker","elytrafly","boatfly","entityspeed",
+    "clickgui","hud","arraylist","config"
 )
 
-$Global:KeywordRegex = "inject|hook|loader|cheat|hack|vape|rise|flux|bypass|selfdestruct|wipe|cleanup|rat|trojan|keylog|steal|dump|autoclick|macro|minecraft|javaw|ghostclient|hackedclient|doomsday|meteor|wurst|aristois|liquidbounce|impact|future|inertia|rusherhack|abyss|fdp|kami|bleachhack"
+$Global:KeywordRegex="vape|doomsday|drip|iridium|entropy|juul|whiteout|raven|koid|meteor|wurst|liquidbounce|impact|future|aristois|inertia|rusherhack|abyss|wolfram|phobos|pyro|forgehax|lambda|kami|bleachhack|3arthh4ck|fdp|seppuku|salhack|konc|envy|spicy|jello|zyklon|xulu|cheatware|crystallinqq|devilsight|reverb|lucid|inject|hook|loader|cheat|hack|bypass|selfdestruct|wipe|cleanup|rat|trojan|keylog|steal|dump|autoclick|macro|ghostclient|hackedclient|killaura|aimbot|xray|baritone|clientloader"
 
-# ============================================
-# CAPA 1: PROCESOS
-# ============================================
-
+#============================================================
+#CAPA 1: PROCESOS (MEJORADA)
+#============================================================
 function Scan-Processes {
-    $results = @()
-    Write-Evidence "[CAPA1] Iniciando escaneo de procesos..."
-    
-    $allProcs = Get-Process -ErrorAction SilentlyContinue
-    $wmiProcs = @()
-    try { $wmiProcs = Get-WmiObject Win32_Process -ErrorAction SilentlyContinue } catch {}
-    
-    $combined = @{}
-    foreach ($p in $allProcs) { $combined[$p.Id] = $p }
-    foreach ($p in $wmiProcs) { 
-        if (-not $combined.ContainsKey($p.ProcessId)) {
-            $fake = New-Object PSObject -Property @{
-                Id = $p.ProcessId
-                ProcessName = $p.Name
-                StartTime = $p.CreationDate
-            }
-            $combined[$p.ProcessId] = $fake
+    $results=@()
+    Write-Evidence "[CAPA1] Escaneando procesos..."
+    $allProcs=Get-Process -ErrorAction SilentlyContinue
+    $wmiProcs=@()
+    try{$wmiProcs=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue}catch{}
+    $combined=@{}
+    foreach($p in $allProcs){$combined[$p.Id]=$p}
+    foreach($p in $wmiProcs){
+        if(-not $combined.ContainsKey($p.ProcessId)){
+            $fake=New-Object PSObject -Property @{Id=$p.ProcessId;ProcessName=$p.Name;StartTime=$p.CreationDate}
+            $combined[$p.ProcessId]=$fake
             Write-Evidence "[!] Proceso OCULTO via WMI: $($p.Name) PID:$($p.ProcessId)"
         }
     }
-    
-    $allKeywords = $Global:CheatKeywords + $Global:InjectionClients + $Global:JarClients
-    foreach ($proc in $combined.Values) {
-        $name = $proc.ProcessName.ToLower()
-        $match = $allKeywords | Where-Object { $name -like "*$_*" -or $name -eq $_ } | Select-Object -First 1
-        if ($match) {
-            $path = ""; $startTime = ""
-            try { $path = $proc.Path } catch { try { $path = $proc.MainModule.FileName } catch {} }
-            try { $startTime = $proc.StartTime } catch {}
-            $results += [PSCustomObject]@{
-                Tipo = "PROCESO"; Nombre = $proc.ProcessName; PID = $proc.Id
-                Ruta = $path; Inicio = $startTime; Match = $match
-            }
+    $allKeywords=$Global:CheatKeywords+$Global:InjectionClients+$Global:JarClients
+    foreach($proc in $combined.Values){
+        $name=$proc.ProcessName.ToLower()
+        $match=$allKeywords|Where-Object{$name -like "*$_*" -or $name -eq $_}|Select-Object -First 1
+        if($match){
+            $path="";$startTime=""
+            try{$path=$proc.Path}catch{try{$path=$proc.MainModule.FileName}catch{}}
+            try{$startTime=$proc.StartTime}catch{}
+            $results+=[PSCustomObject]@{Tipo="PROCESO";Nombre=$proc.ProcessName;PID=$proc.Id;Ruta=$path;Inicio=$startTime;Match=$match}
             Write-Evidence "[CAPA1] PROCESO: $($proc.ProcessName) PID:$($proc.Id) match:$match"
         }
     }
-    
-    # Procesos inyectores (procesos que no son java pero inyectan en java)
-    $injectorNames = @("injector", "loader", "patcher", "launcher", "clientloader")
-    foreach ($proc in $combined.Values) {
-        $name = $proc.ProcessName.ToLower()
-        $match = $injectorNames | Where-Object { $name -like "*$_*" } | Select-Object -First 1
-        if ($match) {
-            $path = ""
-            try { $path = $proc.Path } catch { try { $path = $proc.MainModule.FileName } catch {} }
-            $results += [PSCustomObject]@{
-                Tipo = "INYECTOR"; Nombre = $proc.ProcessName; PID = $proc.Id
-                Ruta = $path; Inicio = $proc.StartTime; Match = $match
-            }
+    $injectorNames=@("injector","loader","patcher","clientloader","anticheat")
+    foreach($proc in $combined.Values){
+        $name=$proc.ProcessName.ToLower()
+        $match=$injectorNames|Where-Object{$name -like "*$_*"}|Select-Object -First 1
+        if($match){
+            $path=""
+            try{$path=$proc.Path}catch{try{$path=$proc.MainModule.FileName}catch{}}
+            $results+=[PSCustomObject]@{Tipo="INYECTOR";Nombre=$proc.ProcessName;PID=$proc.Id;Ruta=$path;Inicio=$proc.StartTime;Match=$match}
             Write-Evidence "[CAPA1] INYECTOR: $($proc.ProcessName) PID:$($proc.Id)"
         }
     }
-    
-    return $results
-}
-
-# ============================================
-# CAPA 2: MEMORIA / DLLs
-# ============================================
-
-function Scan-Memory {
-    $results = @()
-    Write-Evidence "[CAPA2] Escaneando DLLs en memoria..."
-    
-    $targetNames = @("javaw", "java", "minecraft", "chrome", "firefox", "msedge", "opera")
-    
-    foreach ($target in $targetNames) {
-        $procs = Get-Process -Name $target -ErrorAction SilentlyContinue
-        foreach ($p in $procs) {
-            try {
-                $mods = $p.Modules | Where-Object { 
-                    $mn = $_.ModuleName.ToLower()
-                    ($Global:SuspDlls | Where-Object { $mn -like "*$_*" }) -ne $null
+    $javaProcs=@("javaw","java","minecraft")
+    foreach($jn in $javaProcs){
+        $procs=Get-Process -Name $jn -ErrorAction SilentlyContinue
+        foreach($p in $procs){
+            try{
+                $parent=(Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)" -ErrorAction SilentlyContinue).ParentProcessId
+                $parentProc=Get-Process -Id $parent -ErrorAction SilentlyContinue
+                if($parentProc -and $parentProc.ProcessName -notmatch "cmd|powershell|explorer|cmd|taskmgr|system"){
+                    $parentPath=""
+                    try{$parentPath=$parentProc.Path}catch{}
+                    $results+=[PSCustomObject]@{Tipo="PADRE SOSPECHOSO";Nombre=$parentProc.ProcessName;PID=$parent;Ruta=$parentPath;Match="javaw parent: $($p.ProcessName) PID:$($p.Id)"}
+                    Write-Evidence "[CAPA1] PADRE SOSPECHOSO: $($parentProc.ProcessName) PID:$parent lanzo $($p.ProcessName)"
                 }
-                foreach ($mod in $mods) {
-                    $results += [PSCustomObject]@{
-                        Tipo = "DLL_INYECTADA"; Proceso = $p.ProcessName; PID = $p.Id
-                        DLL = $mod.ModuleName; Ruta = $mod.FileName
-                    }
-                    Write-Evidence "[CAPA2] DLL: $($mod.ModuleName) en $($p.ProcessName) PID:$($p.Id)"
-                }
-            } catch {}
+            }catch{}
         }
     }
     return $results
 }
 
-# ============================================
-# CAPA 3: DISCO - .minecraft FORENSICO
-# ============================================
+#============================================================
+#CAPA 2: MEMORIA / DLLs (MEJORADA)
+#============================================================
+function Scan-Memory {
+    $results=@()
+    Write-Evidence "[CAPA2] Escaneando DLLs en memoria..."
+    $targetNames=@("javaw","java","minecraft","chrome","firefox","msedge","opera","brave")
+    foreach($target in $targetNames){
+        $procs=Get-Process -Name $target -ErrorAction SilentlyContinue
+        foreach($p in $procs){
+            try{
+                $mods=$p.Modules|Where-Object{
+                    $mn=$_.ModuleName.ToLower()
+                    ($Global:SuspDlls|Where-Object{$mn -like "*$_*"}) -ne $null
+                }
+                foreach($mod in $mods){
+                    $results+=[PSCustomObject]@{Tipo="DLL_INYECTADA";Proceso=$p.ProcessName;PID=$p.Id;DLL=$mod.ModuleName;Ruta=$mod.FileName}
+                    Write-Evidence "[CAPA2] DLL: $($mod.ModuleName) en $($p.ProcessName) PID:$($p.Id)"
+                }
+            }catch{}
+            try{
+                $nonStdMods=$p.Modules|Where-Object{
+                    $fn=$_.FileName.ToLower()
+                    ($fn -match "\\users\\.*\\appdata" -or $fn -match "\\temp\\" -or $fn -match "\\downloads\\" -or $fn -match "\\desktop\\")
+                }
+                foreach($mod in $nonStdMods){
+                    $results+=[PSCustomObject]@{Tipo="DLL_NO_ESTANDAR";Proceso=$p.ProcessName;PID=$p.Id;DLL=$mod.ModuleName;Ruta=$mod.FileName}
+                    Write-Evidence "[CAPA2] DLL_NO_ESTANDAR: $($mod.FileName) en $($p.ProcessName)"
+                }
+            }catch{}
+        }
+    }
+    $stringsPath=Join-Path $Global:TempToolsPath "strings.exe"
+    if(Test-Path $stringsPath){
+        $javaProcs=Get-Process -Name "javaw","java" -ErrorAction SilentlyContinue
+        foreach($p in $javaProcs){
+            try{
+                $procPath=$p.MainModule.FileName
+                if($procPath){
+                    $strOut=& $stringsPath -n 5 $procPath 2>&1|Select-String -Pattern $Global:KeywordRegex -SimpleMatch|Select-Object -First 10
+                    foreach($s in $strOut){
+                        $results+=[PSCustomObject]@{Tipo="STRING_CHEAT";Proceso=$p.ProcessName;PID=$p.Id;DLL="N/A";Ruta=$s.Line}
+                        Write-Evidence "[CAPA2] STRING_CHEAT: $($s.Line) en $($p.ProcessName)"
+                    }
+                }
+            }catch{}
+        }
+    }
+    return $results
+}
 
+#============================================================
+#CAPA 3: .minecraft FORENSICO (MEJORADA)
+#============================================================
 function Scan-MinecraftFolder {
-    $results = @()
-    Write-Evidence "[CAPA3] Escaneando .minecraft y mods..."
-    
-    $mcPaths = @(
-        "$env:USERPROFILE\AppData\Roaming\.minecraft",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\mods",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\versions",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\config",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\logs",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\crash-reports",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\libraries",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\resourcepacks",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\saves",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\launcher_profiles.json",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft\launcher_accounts.json"
+    $results=@()
+    Write-Evidence "[CAPA3] Escaneando .minecraft..."
+    $mcBase="$env:USERPROFILE\AppData\Roaming\.minecraft"
+    $scanPaths=@(
+        @{Path=$mcBase;Label="ROOT"},
+        @{Path="$mcBase\mods";Label="MODS"},
+        @{Path="$mcBase\versions";Label="VERSIONS"},
+        @{Path="$mcBase\config";Label="CONFIG"},
+        @{Path="$mcBase\logs";Label="LOGS"},
+        @{Path="$mcBase\crash-reports";Label="CRASH"},
+        @{Path="$mcBase\libraries";Label="LIBRARIES"},
+        @{Path="$mcBase\resourcepacks";Label="RESOURCEPACKS"}
     )
-    
-    # Launchers alternativos
-    $additionalLaunchers = @(
+    $additionalLaunchers=@(
         "$env:USERPROFILE\AppData\Roaming\PrismLauncher\instances",
         "$env:USERPROFILE\AppData\Roaming\MultiMC\instances",
         "$env:USERPROFILE\AppData\Roaming\CurseForge\Minecraft\Instances",
@@ -1107,719 +788,1401 @@ function Scan-MinecraftFolder {
         "$env:USERPROFILE\AppData\Roaming\.feather",
         "$env:USERPROFILE\AppData\Roaming\ATLauncher"
     )
-    
-    # Buscar carpetas ocultas de cheats en .minecraft y directorio home
-    $homePaths = @(
-        "$env:USERPROFILE",
-        "$env:USERPROFILE\AppData\Roaming\.minecraft",
+    $homePaths=@(
+        $env:USERPROFILE,
+        $mcBase,
         "$env:USERPROFILE\AppData\Roaming",
         "$env:USERPROFILE\AppData\Local"
     )
-    
-    foreach ($hp in $homePaths) {
-        if (Test-Path $hp) {
-            try {
-                $dirs = Get-ChildItem -Path $hp -Directory -Force -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -in $Global:CheatFolders -or ($Global:CheatFolders | Where-Object { $_.Name -like "*$_*" }) }
-                foreach ($d in $dirs) {
-                    $results += [PSCustomObject]@{
-                        Tipo = "CARPETA_CHEAT"; Nombre = $d.Name; Ruta = $d.FullName
-                        Tamano = ""; Match = $d.Name
-                    }
+    foreach($hp in $homePaths){
+        if(Test-Path $hp){
+            try{
+                $dirs=Get-ChildItem -Path $hp -Directory -Force -ErrorAction SilentlyContinue|
+                    Where-Object{$_.Name -in $Global:CheatFolders -or ($Global:CheatFolders|Where-Object{$_.Name -like "*$_*"})}
+                foreach($d in $dirs){
+                    $results+=[PSCustomObject]@{Tipo="CARPETA_CHEAT";Nombre=$d.Name;Ruta=$d.FullName;Tamano="";Match=$d.Name}
                     Write-Evidence "[CAPA3] CARPETA_CHEAT: $($d.FullName)"
                 }
-            } catch {}
+            }catch{}
         }
     }
-    
-    # Buscar mods maliciosos en .minecraft/mods/
-    $modsPath = "$env:USERPROFILE\AppData\Roaming\.minecraft\mods"
-    if (Test-Path $modsPath) {
-        $mods = Get-ChildItem -Path $modsPath -Filter "*.jar" -ErrorAction SilentlyContinue
-        foreach ($m in $mods) {
-            $match = $Global:JarClients | Where-Object { $m.Name.ToLower() -match $_ } | Select-Object -First 1
-            if ($match) {
-                $results += [PSCustomObject]@{
-                    Tipo = "MOD_SOSPECHOSO"; Nombre = $m.Name; Ruta = $m.FullName
-                    Tamano = "$([math]::Round($m.Length/1KB,1)) KB"; Match = $match
-                }
+    if(Test-Path $mcBase){
+        $hiddenDirs=Get-ChildItem -Path $mcBase -Directory -Force -ErrorAction SilentlyContinue|
+            Where-Object{$_.Attributes -band [System.IO.FileAttributes]::Hidden}
+        foreach($hd in $hiddenDirs){
+            $match=$Global:CheatFolders|Where-Object{$hd.Name -like "*$_*"}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="CARPETA_OCULTA";Nombre=$hd.Name;Ruta=$hd.FullName;Tamano="";Match=$match}
+                Write-Evidence "[CAPA3] CARPETA_OCULTA: $($hd.FullName)"
+            }
+        }
+    }
+    $modsPath="$mcBase\mods"
+    if(Test-Path $modsPath){
+        $mods=Get-ChildItem -Path $modsPath -Filter "*.jar" -ErrorAction SilentlyContinue
+        foreach($m in $mods){
+            $match=$Global:JarClients|Where-Object{$m.Name.ToLower() -match $_}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="MOD_SOSPECHOSO";Nombre=$m.Name;Ruta=$m.FullName;Tamano="$([math]::Round($m.Length/1KB,1)) KB";Match=$match}
                 Write-Evidence "[CAPA3] MOD: $($m.FullName) match:$match"
             }
         }
-        
-        $modJars = Get-ChildItem -Path $modsPath -Filter "*.jar" -ErrorAction SilentlyContinue
-        foreach ($mj in $modJars) {
-            if ($mj.Length -gt 100KB) {
-                try {
-                    $bytes = [System.IO.File]::ReadAllBytes($mj.FullName)
-                    $content = [System.Text.Encoding]::UTF8.GetString($bytes)
-                    $kws = $Global:CheatKeywords | Where-Object { $content -match $_ } | Select-Object -First 3
-                    if ($kws -and $kws.Count -gt 0) {
-                        $results += [PSCustomObject]@{
-                            Tipo = "MOD_HEURISTICO"; Nombre = $mj.Name; Ruta = $mj.FullName
-                            Tamano = "$([math]::Round($mj.Length/1KB,1)) KB"; Match = "$($kws -join ',')"
-                        }
+        $modJars=Get-ChildItem -Path $modsPath -Filter "*.jar" -ErrorAction SilentlyContinue
+        foreach($mj in $modJars){
+            if($mj.Length -gt 100KB){
+                try{
+                    $bytes=[System.IO.File]::ReadAllBytes($mj.FullName)
+                    $content=[System.Text.Encoding]::UTF8.GetString($bytes)
+                    $kws=$Global:CheatKeywords|Where-Object{$_ -and $_.Length -gt 3 -and $content -match [regex]::Escape($_)}|Select-Object -First 3
+                    if($kws -and $kws.Count -gt 0){
+                        $results+=[PSCustomObject]@{Tipo="MOD_HEURISTICO";Nombre=$mj.Name;Ruta=$mj.FullName;Tamano="$([math]::Round($mj.Length/1KB,1)) KB";Match="$($kws -join ',')"}
                         Write-Evidence "[CAPA3] MOD_HEURISTICO: $($mj.FullName) keywords:$($kws -join ',')"
                     }
-                } catch {}
+                }catch{}
             }
         }
     }
-    
-    # Buscar versiones de cheats en .minecraft/versions/
-    $versionsPath = "$env:USERPROFILE\AppData\Roaming\.minecraft\versions"
-    if (Test-Path $versionsPath) {
-        $versions = Get-ChildItem -Path $versionsPath -Directory -ErrorAction SilentlyContinue
-        foreach ($v in $versions) {
-            $match = $Global:JarClients | Where-Object { $v.Name.ToLower() -match $_ } | Select-Object -First 1
-            if ($match) {
-                $results += [PSCustomObject]@{
-                    Tipo = "VERSION_CHEAT"; Nombre = $v.Name; Ruta = $v.FullName
-                    Tamano = ""; Match = $match
-                }
+    $versionsPath="$mcBase\versions"
+    if(Test-Path $versionsPath){
+        $versions=Get-ChildItem -Path $versionsPath -Directory -ErrorAction SilentlyContinue
+        foreach($v in $versions){
+            $match=$Global:JarClients|Where-Object{$v.Name.ToLower() -match $_}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="VERSION_CHEAT";Nombre=$v.Name;Ruta=$v.FullName;Tamano="";Match=$match}
                 Write-Evidence "[CAPA3] VERSION_CHEAT: $($v.FullName)"
             }
         }
     }
-    
-    # Buscar configs de cheats en .minecraft/config/
-    $configPath = "$env:USERPROFILE\AppData\Roaming\.minecraft\config"
-    if (Test-Path $configPath) {
-        $configs = Get-ChildItem -Path $configPath -ErrorAction SilentlyContinue
-        foreach ($c in $configs) {
-            $match = $Global:CheatFolders | Where-Object { $c.Name.ToLower() -match $_ } | Select-Object -First 1
-            if ($match) {
-                $results += [PSCustomObject]@{
-                    Tipo = "CONFIG_CHEAT"; Nombre = $c.Name; Ruta = $c.FullName
-                    Tamano = ""; Match = $match
-                }
+    $configPath="$mcBase\config"
+    if(Test-Path $configPath){
+        $configs=Get-ChildItem -Path $configPath -ErrorAction SilentlyContinue
+        foreach($c in $configs){
+            $match=$Global:CheatFolders|Where-Object{$c.Name.ToLower() -match $_}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="CONFIG_CHEAT";Nombre=$c.Name;Ruta=$c.FullName;Tamano="";Match=$match}
                 Write-Evidence "[CAPA3] CONFIG_CHEAT: $($c.FullName)"
             }
         }
     }
-    
-    # Analizar logs de Minecraft
-    $logsPath = "$env:USERPROFILE\AppData\Roaming\.minecraft\logs"
-    if (Test-Path $logsPath) {
-        $logFiles = Get-ChildItem -Path $logsPath -Filter "*.log" -ErrorAction SilentlyContinue
-        foreach ($lf in $logFiles) {
-            try {
-                $content = Get-Content $lf.FullName -Tail 2000 -ErrorAction SilentlyContinue
-                $foundKeywords = $Global:CheatKeywords | Where-Object { 
-                    $_ -and $_.Length -gt 3 -and $content -match [regex]::Escape($_)
-                } | Select-Object -First 3
-                if ($foundKeywords) {
-                    $results += [PSCustomObject]@{
-                        Tipo = "LOG_CHEAT"; Nombre = $lf.Name; Ruta = $lf.FullName
-                        Tamano = "$([math]::Round($lf.Length/1KB,1)) KB"; Match = "$($foundKeywords -join ',')"
-                    }
+    $optionsPath="$mcBase\options.txt"
+    if(Test-Path $optionsPath){
+        try{
+            $opts=Get-Content $optionsPath -ErrorAction SilentlyContinue
+            $suspKeys=$opts|Where-Object{$_ -match "key\s*=\s*(?!None|UNKNOWN)" -and $_ -match "key"}|Select-Object -First 20
+            if($suspKeys.Count -gt 15){
+                $results+=[PSCustomObject]@{Tipo="OPTIONS_SOSPECHOSO";Nombre="options.txt";Ruta=$optionsPath;Tamano="";Match="Muchas keybinds ($($suspKeys.Count))"}
+                Write-Evidence "[CAPA3] OPTIONS_SOSPECHOSO: Muchas keybinds: $($suspKeys.Count)"
+            }
+        }catch{}
+    }
+    $userCache="$mcBase\usercache.json"
+    if(Test-Path $userCache){
+        try{
+            $uc=Get-Content $userCache -Raw|ConvertFrom-Json -ErrorAction SilentlyContinue
+            if($uc -and $uc.Count -gt 10){
+                $results+=[PSCustomObject]@{Tipo="USERCACHE";Nombre="usercache.json";Ruta=$userCache;Tamano="";Match="Cuentas: $($uc.Count)"}
+            }
+        }catch{}
+    }
+    $logsPath="$mcBase\logs"
+    if(Test-Path $logsPath){
+        $logFiles=Get-ChildItem -Path $logsPath -Filter "*.log" -ErrorAction SilentlyContinue
+        foreach($lf in $logFiles){
+            try{
+                $content=Get-Content $lf.FullName -Tail 2000 -ErrorAction SilentlyContinue
+                $foundKeywords=$Global:CheatKeywords|Where-Object{$_ -and $_.Length -gt 3 -and $content -match [regex]::Escape($_)}|Select-Object -First 3
+                if($foundKeywords){
+                    $results+=[PSCustomObject]@{Tipo="LOG_CHEAT";Nombre=$lf.Name;Ruta=$lf.FullName;Tamano="$([math]::Round($lf.Length/1KB,1)) KB";Match="$($foundKeywords -join ',')"}
                     Write-Evidence "[CAPA3] LOG_CHEAT: $($lf.Name) match:$($foundKeywords -join ',')"
                 }
-            } catch {}
+            }catch{}
         }
     }
-    
-    # Analizar crash-reports
-    $crashPath = "$env:USERPROFILE\AppData\Roaming\.minecraft\crash-reports"
-    if (Test-Path $crashPath) {
-        $crashes = Get-ChildItem -Path $crashPath -Filter "*.txt" -ErrorAction SilentlyContinue
-        foreach ($cr in $crashes) {
-            try {
-                $content = Get-Content $cr.FullName -Raw -ErrorAction SilentlyContinue
-                $found = $Global:JarClients | Where-Object { $content -match $_ } | Select-Object -First 2
-                if ($found) {
-                    $results += [PSCustomObject]@{
-                        Tipo = "CRASH_CHEAT"; Nombre = $cr.Name; Ruta = $cr.FullName
-                        Tamano = ""; Match = "$($found -join ',')"
-                    }
-                    Write-Evidence "[CAPA3] CRASH_CHEAT: $($cr.Name)"
+    $crashPath="$mcBase\crash-reports"
+    if(Test-Path $crashPath){
+        $crashes=Get-ChildItem -Path $crashPath -Filter "*.txt" -ErrorAction SilentlyContinue
+        foreach($cr in $crashes){
+            try{
+                $content=Get-Content $cr.FullName -Raw -ErrorAction SilentlyContinue
+                $found=$Global:JarClients|Where-Object{$content -match $_}|Select-Object -First 2
+                if($found){
+                    $results+=[PSCustomObject]@{Tipo="CRASH_CHEAT";Nombre=$cr.Name;Ruta=$cr.FullName;Tamano="";Match="$($found -join ',')"}
                 }
-            } catch {}
+            }catch{}
         }
     }
-    
-    # Launchers alternativos
-    foreach ($lp in $additionalLaunchers) {
-        if (Test-Path $lp) {
-            $items = Get-ChildItem -Path $lp -ErrorAction SilentlyContinue
-            foreach ($it in $items) {
-                $match = $Global:JarClients | Where-Object { $it.Name.ToLower() -match $_ } | Select-Object -First 1
-                if ($match) {
-                    $results += [PSCustomObject]@{
-                        Tipo = "LAUNCHER_ITEM"; Nombre = $it.Name; Ruta = $it.FullName
-                        Tamano = ""; Match = $match
-                    }
-                    Write-Evidence "[CAPA3] LAUNCHER: $($it.FullName)"
+    foreach($lp in $additionalLaunchers){
+        if(Test-Path $lp){
+            $items=Get-ChildItem -Path $lp -ErrorAction SilentlyContinue
+            foreach($it in $items){
+                $match=$Global:JarClients|Where-Object{$it.Name.ToLower() -match $_}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="LAUNCHER_ITEM";Nombre=$it.Name;Ruta=$it.FullName;Tamano="";Match=$match}
                 }
             }
         }
     }
-    
+    $jsonConfigs=Get-ChildItem -Path "$mcBase\config" -Filter "*.json" -ErrorAction SilentlyContinue
+    foreach($jc in $jsonConfigs){
+        $match=$Global:CheatFolders|Where-Object{$jc.Name.ToLower() -match $_}|Select-Object -First 1
+        if($match){
+            $results+=[PSCustomObject]@{Tipo="CONFIG_JSON";Nombre=$jc.Name;Ruta=$jc.FullName;Tamano="";Match=$match}
+        }
+    }
     return $results
 }
 
-# ============================================
-# CAPA 4: REGISTRO, SERVICIOS, TAREAS
-# ============================================
-
+#============================================================
+#CAPA 4: REGISTRO, SERVICIOS, TAREAS (MEJORADA)
+#============================================================
 function Scan-Registry {
-    $results = @()
+    $results=@()
     Write-Evidence "[CAPA4] Escaneando registro, servicios, tareas..."
-    
-    $runPaths = @(
+    $runPaths=@(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
         "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Run",
         "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
-        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce"
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunServices",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunServicesOnce",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunServices",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunServicesOnce",
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer\Run",
+        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders",
+        "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
     )
-    foreach ($rp in $runPaths) {
-        if (Test-Path $rp) {
-            $items = Get-ItemProperty -Path $rp -ErrorAction SilentlyContinue
-            foreach ($item in $items.PSObject.Properties) {
-                if ($item.Name -match "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider") { continue }
-                if ($item.Value -match $Global:KeywordRegex) {
-                    $results += [PSCustomObject]@{ Tipo = "REGISTRO_RUN"; Ruta = "$rp\$($item.Name)"; Valor = $item.Value }
+    foreach($rp in $runPaths){
+        if(Test-Path $rp){
+            $items=Get-ItemProperty -Path $rp -ErrorAction SilentlyContinue
+            foreach($item in $items.PSObject.Properties){
+                if($item.Name -match "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider"){continue}
+                if($item.Value -and "$($item.Value)" -match $Global:KeywordRegex){
+                    $results+=[PSCustomObject]@{Tipo="REGISTRO_RUN";Ruta="$rp\$($item.Name)";Valor="$($item.Value)"}
                     Write-Evidence "[CAPA4] REG: $rp\$($item.Name)"
                 }
             }
         }
     }
-    
-    try {
-        $services = Get-WmiObject Win32_Service -ErrorAction SilentlyContinue
-        foreach ($s in $services) {
-            if ($s.PathName -match $Global:KeywordRegex -or $s.Name -match $Global:KeywordRegex) {
-                $results += [PSCustomObject]@{ Tipo = "SERVICIO"; Nombre = $s.Name; Ruta = $s.PathName; Estado = $s.State }
+    $appInitPath="HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows"
+    if(Test-Path $appInitPath){
+        $appInit=Get-ItemProperty -Path $appInitPath -Name "AppInit_DLLs" -ErrorAction SilentlyContinue
+        if($appInit -and $appInit.AppInit_DLLs -and $appInit.AppInit_DLLs -ne ""){
+            $results+=[PSCustomObject]@{Tipo="APPINIT_DLL";Ruta=$appInitPath;Valor=$appInit.AppInit_DLLs}
+            Write-Evidence "[CAPA4] APPINIT_DLL: $($appInit.AppInit_DLLs)"
+        }
+    }
+    $ifeoPath="HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+    if(Test-Path $ifeoPath){
+        $ifeoKeys=Get-ChildItem -Path $ifeoPath -ErrorAction SilentlyContinue
+        foreach($ik in $ifeoKeys){
+            $debugger=Get-ItemProperty -Path $ik.PSPath -Name "Debugger" -ErrorAction SilentlyContinue
+            if($debugger -and $debugger.Debugger){
+                $dk=$ik.PSChildName.ToLower()
+                $match=$Global:CheatKeywords|Where-Object{$dk -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="IFEO_HIJACK";Ruta=$ik.PSPath;Valor="Debugger: $($debugger.Debugger)";Match=$match}
+                    Write-Evidence "[CAPA4] IFEO_HIJACK: $($ik.PSChildName) -> $($debugger.Debugger)"
+                }
+            }
+            $silentExit=Get-ItemProperty -Path $ik.PSPath -Name "GlobalFlag" -ErrorAction SilentlyContinue
+            if($silentExit -and $silentExit.GlobalFlag -band 0x200){
+                $results+=[PSCustomObject]@{Tipo="IFEO_SILENT_EXIT";Ruta=$ik.PSPath;Valor="GlobalFlag: $($silentExit.GlobalFlag) (Silent Process Exit)"}
+                Write-Evidence "[CAPA4] IFEO_SILENT_EXIT: $($ik.PSChildName)"
+            }
+        }
+    }
+    $knownDLLsPath="HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs"
+    if(Test-Path $knownDLLsPath){
+        $knownDLLs=Get-ItemProperty -Path $knownDLLsPath -ErrorAction SilentlyContinue
+        foreach($prop in $knownDLLs.PSObject.Properties){
+            if($prop.Name -match "PSPath|PS"){continue}
+            if($prop.Value -and "$($prop.Value)" -match $Global:KeywordRegex){
+                $results+=[PSCustomObject]@{Tipo="KNOWN_DLL_MOD";Ruta=$knownDLLsPath;Valor="$($prop.Name) = $($prop.Value)"}
+                Write-Evidence "[CAPA4] KNOWN_DLL_MOD: $($prop.Name) = $($prop.Value)"
+            }
+        }
+    }
+    $winlogonNotify="HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Notify"
+    if(Test-Path $winlogonNotify){
+        $notifyKeys=Get-ChildItem -Path $winlogonNotify -ErrorAction SilentlyContinue
+        foreach($nk in $notifyKeys){
+            $dll=Get-ItemProperty -Path $nk.PSPath -Name "DLLName" -ErrorAction SilentlyContinue
+            if($dll -and $dll.DLLName){
+                $match=$Global:CheatKeywords|Where-Object{$dll.DLLName -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="WINLOGON_NOTIFY";Ruta=$nk.PSPath;Valor=$dll.DLLName;Match=$match}
+                    Write-Evidence "[CAPA4] WINLOGON_NOTIFY: $($dll.DLLName)"
+                }
+            }
+        }
+    }
+    try{
+        $services=Get-CimInstance Win32_Service -ErrorAction SilentlyContinue
+        foreach($s in $services){
+            if($s.PathName -match $Global:KeywordRegex -or $s.Name -match $Global:KeywordRegex){
+                $results+=[PSCustomObject]@{Tipo="SERVICIO";Nombre=$s.Name;Ruta=$s.PathName;Estado=$s.State}
                 Write-Evidence "[CAPA4] SERVICIO: $($s.Name)"
             }
         }
-    } catch {}
-    
-    try {
-        $tasks = Get-ScheduledTask -ErrorAction SilentlyContinue
-        foreach ($t in $tasks) {
-            $actions = "$($t.Actions)"
-            if ($actions -match $Global:KeywordRegex) {
-                $results += [PSCustomObject]@{ Tipo = "TAREA"; Nombre = $t.TaskName; Accion = $actions }
+    }catch{}
+    try{
+        $tasks=Get-ScheduledTask -ErrorAction SilentlyContinue
+        foreach($t in $tasks){
+            $actions="$($t.Actions)"
+            if($actions -match $Global:KeywordRegex){
+                $results+=[PSCustomObject]@{Tipo="TAREA";Nombre=$t.TaskName;Accion=$actions}
                 Write-Evidence "[CAPA4] TAREA: $($t.TaskName)"
             }
         }
-    } catch {}
-    
+    }catch{}
+    $autorunsPath=Join-Path $Global:TempToolsPath "autoruns.exe"
+    if(Test-Path $autorunsPath){
+        try{
+            $arOutput=& $autorunsPath /s "$env:TEMP\_ac_autoruns. CSV" /accepteula 2>&1
+            $arCsv=Get-Content "$env:TEMP\_ac_autoruns.CSV" -ErrorAction SilentlyContinue|ConvertFrom-Csv -ErrorAction SilentlyContinue
+            foreach($ar in $arCsv){
+                $val="$($ar.'Entry') $($ar.'Value') $($ar.'Description')".ToLower()
+                $match=$Global:CheatKeywords|Where-Object{$val -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="AUTORUNS";Nombre=$ar.'Entry';Ruta=$ar.'Value';Tamano="";Match=$match}
+                    Write-Evidence "[CAPA4] AUTORUNS: $($ar.'Entry') match:$match"
+                }
+            }
+        }catch{}
+    }
     return $results
 }
 
-# ============================================
-# CAPA 5: KERNEL
-# ============================================
-
+#============================================================
+#CAPA 5: KERNEL (MEJORADA)
+#============================================================
 function Scan-Kernel {
-    $results = @()
+    $results=@()
     Write-Evidence "[CAPA5] Escaneando kernel..."
-    
-    $suspDrivers = @("inject", "hook", "cheat", "hack", "wproc", "dbutil", "speedfan",
-        "winio", "winring0", "easydriver", "phymem", "gdrv", "cpuid",
-        "kprocess", "processhacker", "memory", "ring0", "kdmapper",
-        "mapper", "eac", "battleye", "anticheat", "injectdrv")
-    
-    try {
-        $drivers = Get-WmiObject Win32_SystemDriver -ErrorAction SilentlyContinue
-        foreach ($d in $drivers) {
-            $dn = $d.Name.ToLower()
-            foreach ($s in $suspDrivers) {
-                if ($dn -like "*$s*") {
-                    $results += [PSCustomObject]@{ Tipo = "DRIVER"; Nombre = $d.Name; Ruta = $d.PathName; Estado = $d.State }
+    $suspDrivers=@("inject","hook","cheat","hack","wproc","dbutil","speedfan",
+        "winio","winring0","easydriver","phymem","gdrv","cpuid",
+        "kprocess","processhacker","memory","ring0","kdmapper",
+        "mapper","eac","battleye","anticheat","injectdrv","physmem")
+    try{
+        $drivers=Get-CimInstance Win32_SystemDriver -ErrorAction SilentlyContinue
+        foreach($d in $drivers){
+            $dn=$d.Name.ToLower()
+            foreach($s in $suspDrivers){
+                if($dn -like "*$s*"){
+                    $results+=[PSCustomObject]@{Tipo="DRIVER";Nombre=$d.Name;Ruta=$d.PathName;Estado=$d.State;Match=$s}
                     Write-Evidence "[CAPA5] DRIVER: $($d.Name) match:$s"
                 }
             }
         }
-    } catch {}
-    
-    try {
-        $allServices = Get-WmiObject Win32_Service -ErrorAction SilentlyContinue | Where-Object State -eq Running
-        $knownOk = @("nvlddmkm", "dxgkrnl", "win32k", "ntoskrnl", "hal", "ksecdd", "cng",
-            "tcpip", "ndis", "volmgr", "partmgr", "fvevol", "mountmgr", "pci", "acpi")
-        foreach ($s in $allServices) {
-            if ($s.Name -notin $knownOk -and $s.PathName -match '\.sys' -and -not ($s.PathName -match 'System32|SysWOW64|Program Files|Windows')) {
-                $results += [PSCustomObject]@{ Tipo = "DRIVER_SOSPECHOSO"; Nombre = $s.Name; Ruta = $s.PathName }
+    }catch{}
+    try{
+        $allServices=Get-CimInstance Win32_Service -ErrorAction SilentlyContinue|Where-Object{$_.State -eq "Running"}
+        $knownOk=@("nvlddmkm","dxgkrnl","win32k","ntoskrnl","hal","ksecdd","cng",
+            "tcpip","ndis","volmgr","partmgr","fvevol","mountmgr","pci","acpi",
+            "WdFilter","MsSecFlt","sentinel","bam","dam","WSearch","Dnscache",
+            "BFE","WinDefend","mpssvc","Sense","SecurityHealthService")
+        foreach($s in $allServices){
+            if($s.Name -notin $knownOk -and $s.PathName -match '\.sys' -and -not ($s.PathName -match 'System32|SysWOW64|Program Files|Windows')){
+                $results+=[PSCustomObject]@{Tipo="DRIVER_SOSPECHOSO";Nombre=$s.Name;Ruta=$s.PathName;Estado=$s.State}
                 Write-Evidence "[CAPA5] DRIVER_SOSPECHOSO: $($s.Name) ruta:$($s.PathName)"
             }
         }
-    } catch {}
-    
-    try {
-        $targetProcs = @("javaw.exe", "java.exe", "minecraft.exe")
-        foreach ($tproc in $targetProcs) {
-            $procs = Get-Process -Name ($tproc -replace '\.exe','') -ErrorAction SilentlyContinue
-            foreach ($p in $procs) {
-                try {
-                    $mods = $p.Modules | Where-Object { 
-                        $_.ModuleName -match "detours|minhook|easyhook|mhook|hook|inject" -or
-                        $_.ModuleName -notmatch '^(ntdll|kernel32|kernelbase|user32|gdi32|advapi32|ole32|oleaut32|combase|ucrtbase|comctl32|shlwapi|shell32|msvcrt|ws2_32|winhttp|wininet|dnsapi|iphlpapi|rpcrt4|sechost|bcrypt|crypt32|wintrust|setupapi|devobj|cfgmgr32|powrprof|profapi|clbcatq|sxs|mrmcore|textinputframework|windows\.storage|windows\..+)\.dll$'
-                    } | Where-Object { $_.ModuleName -notmatch '^api-ms-win|^ext-ms-win|^concrt|^vcruntime|^msvcp' }
-                    foreach ($mod in $mods) {
-                        $results += [PSCustomObject]@{ Tipo = "HOOK_API"; Proceso = $p.ProcessName; PID = $p.Id; DLL = $mod.ModuleName; Ruta = $mod.FileName }
+    }catch{}
+    try{
+        $targetProcs=@("javaw.exe","java.exe","minecraft.exe")
+        foreach($tproc in $targetProcs){
+            $procs=Get-Process -Name ($tproc -replace '\.exe','') -ErrorAction SilentlyContinue
+            foreach($p in $procs){
+                try{
+                    $mods=$p.Modules|Where-Object{
+                        $_.ModuleName -match "detours|minhook|easyhook|mhook|hook|inject|cheat" -or
+                        $_.ModuleName -notmatch '^(ntdll|kernel32|kernelbase|user32|gdi32|advapi32|ole32|oleaut32|combase|ucrtbase|comctl32|shlwapi|shell32|msvcrt|ws2_32|winhttp|wininet|dnsapi|iphlpapi|rpcrt4|sechost|bcrypt|crypt32|wintrust|setupapi|devobj|cfgmgr32|powrprof|profapi|clbcatq|sxs|mrmcore|textinputframework|windows\.storage|d3d\d+|opengl|d3dcompiler|dxgi|winmm|imm32|msctf|ntdll|wldp|msasn1|ncrypt|cryptsp|ncryptsslp|wintypes|vertdll|userenv|samlib|samcli|netutils|logoncli|clbcatq)\.dll$'
+                    }|Where-Object{$_.ModuleName -notmatch '^api-ms-win|^ext-ms-win|^concrt|^vcruntime|^msvcp'}
+                    foreach($mod in $mods){
+                        $results+=[PSCustomObject]@{Tipo="HOOK_API";Proceso=$p.ProcessName;PID=$p.Id;DLL=$mod.ModuleName;Ruta=$mod.FileName}
                         Write-Evidence "[CAPA5] HOOK_API: $($mod.ModuleName) en $($p.ProcessName)"
                     }
-                } catch {}
+                }catch{}
             }
         }
-    } catch {}
-    
+    }catch{}
     return $results
 }
 
-# ============================================
-# CAPA 6: HISTORIAL DE EJECUCION
-# ============================================
-
+#============================================================
+#CAPA 6: HISTORIAL DE EJECUCION (MEJORADA)
+#============================================================
 function Scan-ExecutionHistory {
-    $results = @()
+    $results=@()
     Write-Evidence "[CAPA6] Escaneando historial de ejecucion..."
-    
-    $hace2h = (Get-Date).AddMinutes(-120)
-    $keywords = $Global:KeywordRegex
-    
-    try {
-        if (!(Get-PSDrive -Name HKLM -PSProvider Registry 2>$null)) {
-            New-PSDrive -Name HKLM -PSProvider Registry -Root HKEY_LOCAL_MACHINE -ErrorAction SilentlyContinue | Out-Null
-        }
-        $bamPaths = @("HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\", "HKLM:\SYSTEM\CurrentControlSet\Services\dam\UserSettings\")
-        foreach ($bamRoot in $bamPaths) {
-            $users = Get-ChildItem -Path $bamRoot -ErrorAction SilentlyContinue | Select-Object -ExpandProperty PSChildName
-            foreach ($sid in $users) {
-                $items = Get-ItemProperty -Path "$bamRoot$sid" -ErrorAction SilentlyContinue
-                $user = try { (New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value } catch { "Sistema" }
-                foreach ($item in $items.PSObject.Properties) {
-                    if ($item.Name -match "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider") { continue }
-                    $key = $item.Value
-                    if ($key.Length -ge 8) {
-                        $hex = [System.BitConverter]::ToString($key[7..0]) -replace "-",""
-                        $timeUser = [DateTime]::FromFileTimeUtc([Convert]::ToInt64($hex, 16))
-                        if ($timeUser -gt $hace2h -or $item.Name -match $keywords) {
-                            $ppath = $item.Name -replace '\\Device\\HarddiskVolume\d+\\', 'C:\'
-                            $results += [PSCustomObject]@{ Tipo = "BAM"; Hora = $timeUser; Usuario = $user; Ruta = $ppath }
-                            Write-Evidence "[CAPA6] BAM: $ppath"
-                        }
+    $hace2h=(Get-Date).AddMinutes(-120)
+    $keywords=$Global:KeywordRegex
+    try{
+        $bamPaths=@("HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\","HKLM:\SYSTEM\CurrentControlSet\Services\dam\UserSettings\")
+        foreach($bamRoot in $bamPaths){
+            $users=Get-ChildItem -Path $bamRoot -ErrorAction SilentlyContinue|Select-Object -ExpandProperty PSChildName
+            foreach($sid in $users){
+                $items=Get-ItemProperty -Path "$bamRoot$sid" -ErrorAction SilentlyContinue
+                $user=try{(New-Object System.Security.Principal.SecurityIdentifier($sid)).Translate([System.Security.Principal.NTAccount]).Value}catch{"Sistema"}
+                foreach($item in $items.PSObject.Properties){
+                    if($item.Name -match "PSPath|PSParentPath|PSChildName|PSDrive|PSProvider"){continue}
+                    $key=$item.Value
+                    if($key -is [byte[]] -and $key.Length -ge 8){
+                        $hex=[System.BitConverter]::ToString($key[7..0]) -replace "-",""
+                        try{
+                            $timeUser=[DateTime]::FromFileTimeUtc([Convert]::ToInt64($hex, 16))
+                            $ppath=$item.Name -replace '\\Device\\HarddiskVolume\d+\\','C:\'
+                            $match=$Global:CheatKeywords|Where-Object{$ppath -like "*$_*"}|Select-Object -First 1
+                            if($timeUser -gt $hace2h -or $match){
+                                $results+=[PSCustomObject]@{Tipo="BAM";Hora=$timeUser;Usuario=$user;Ruta=$ppath;Match=$match}
+                                Write-Evidence "[CAPA6] BAM: $ppath $timeUser"
+                            }
+                        }catch{}
                     }
                 }
             }
         }
-    } catch {}
-    
-    try {
-        $pfFiles = Get-ChildItem -Path "$env:SystemRoot\Prefetch" -Filter "*.pf" -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTime -gt $hace2h -or $_.Name -match $keywords }
-        foreach ($pf in $pfFiles) {
-            $results += [PSCustomObject]@{ Tipo = "PREFETCH"; Archivo = $pf.Name; Modificado = $pf.LastWriteTime }
+    }catch{}
+    try{
+        $pfFiles=Get-ChildItem -Path "$env:SystemRoot\Prefetch" -Filter "*.pf" -ErrorAction SilentlyContinue|
+            Where-Object{$_.LastWriteTime -gt $hace2h -or $_.Name -match $keywords}
+        foreach($pf in $pfFiles){
+            $match=$Global:CheatKeywords|Where-Object{$pf.Name -like "*$_*"}|Select-Object -First 1
+            $results+=[PSCustomObject]@{Tipo="PREFETCH";Archivo=$pf.Name;Modificado=$pf.LastWriteTime;Match=$match}
             Write-Evidence "[CAPA6] PREFETCH: $($pf.Name)"
         }
-    } catch {}
-    
-    try {
-        $events = Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4688]]" -MaxEvents 500 -ErrorAction SilentlyContinue
-        foreach ($e in $events) {
-            if ($e.TimeCreated -gt $hace2h) {
-                $msg = $e.Message
-                if ($msg -match $keywords) {
-                    $short = $msg.Substring(0,[Math]::Min(200,$msg.Length))
-                    $results += [PSCustomObject]@{ Tipo = "EVENTO_4688"; Hora = $e.TimeCreated; Mensaje = $short }
+    }catch{}
+    try{
+        $events=Get-WinEvent -LogName 'Security' -FilterXPath "*[System[EventID=4688]]" -MaxEvents 500 -ErrorAction SilentlyContinue
+        foreach($e in $events){
+            if($e.TimeCreated -gt $hace2h){
+                $msg=$e.Message
+                if($msg -match $keywords){
+                    $short=$msg.Substring(0,[Math]::Min(200,$msg.Length))
+                    $results+=[PSCustomObject]@{Tipo="EVENTO_4688";Hora=$e.TimeCreated;Mensaje=$short}
                     Write-Evidence "[CAPA6] EVENTO_4688: $($e.TimeCreated)"
                 }
             }
         }
-    } catch {}
-    
+    }catch{}
+    try{
+        $psEvents=Get-WinEvent -LogName 'Microsoft-Windows-PowerShell/Operational' -FilterXPath "*[System[EventID=4104]]" -MaxEvents 200 -ErrorAction SilentlyContinue
+        foreach($e in $psEvents){
+            if($e.TimeCreated -gt $hace2h){
+                $msg=$e.Message
+                if($msg -match $keywords -or $msg -match "-EncodedCommand|-WindowStyle Hidden|-ExecutionPolicy Bypass"){
+                    $short=$msg.Substring(0,[Math]::Min(200,$msg.Length))
+                    $results+=[PSCustomObject]@{Tipo="EVENTO_PS";Hora=$e.TimeCreated;Mensaje=$short}
+                    Write-Evidence "[CAPA6] EVENTO_PS: $($e.TimeCreated)"
+                }
+            }
+        }
+    }catch{}
+    try{
+        $svcEvents=Get-WinEvent -LogName 'System' -FilterXPath "*[System[EventID=7045]]" -MaxEvents 100 -ErrorAction SilentlyContinue
+        foreach($e in $svcEvents){
+            if($e.TimeCreated -gt $hace2h){
+                $msg=$e.Message
+                if($msg -match $keywords){
+                    $short=$msg.Substring(0,[Math]::Min(200,$msg.Length))
+                    $results+=[PSCustomObject]@{Tipo="EVENTO_SERVICIO";Hora=$e.TimeCreated;Mensaje=$short}
+                    Write-Evidence "[CAPA6] EVENTO_SERVICIO: $($e.TimeCreated)"
+                }
+            }
+        }
+    }catch{}
+    $uaPath="HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"
+    if(Test-Path $uaPath){
+        $uaGuids=Get-ChildItem -Path $uaPath -ErrorAction SilentlyContinue
+        foreach($guid in $uaGuids){
+            $countPath="$($guid.PSPath)\Count"
+            if(Test-Path $countPath){
+                $entries=Get-ItemProperty -Path $countPath -ErrorAction SilentlyContinue
+                foreach($entry in $entries.PSObject.Properties){
+                    if($entry.Name -match "PSPath|PS"){continue}
+                    try{
+                        $rot13=$entry.Name.ToCharArray()|%{
+                            $c=[int]$_
+                            if($c -ge 65 -and $c -le 90){[char](($c-65+13)%26+65)}
+                            elseif($c -ge 97 -and $c -le 122){[char](($c-97+13)%26+97)}
+                            else{[char]$c}
+                        }|Join-String
+                        $match=$Global:CheatKeywords|Where-Object{$rot13 -like "*$_*"}|Select-Object -First 1
+                        if($match){
+                            $results+=[PSCustomObject]@{Tipo="USERASSIST";Nombre=$rot13;Ruta=$rot13;Tamano="";Match=$match}
+                            Write-Evidence "[CAPA6] USERASSIST: $rot13 match:$match"
+                        }
+                    }catch{}
+                }
+            }
+        }
+    }
+    $recentDocs="HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"
+    if(Test-Path $recentDocs){
+        $rdItems=Get-ItemProperty -Path $recentDocs -ErrorAction SilentlyContinue
+        foreach($prop in $rdItems.PSObject.Properties){
+            if($prop.Name -match "PSPath|PS"){continue}
+            if($prop.Value -and "$($prop.Value)" -match $keywords){
+                $results+=[PSCustomObject]@{Tipo="RECENT_DOCS";Nombre=$prop.Name;Ruta=$prop.Value;Match="MRU"}
+                Write-Evidence "[CAPA6] RECENT_DOCS: $($prop.Value)"
+            }
+        }
+    }
+    $typedPaths="HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths"
+    if(Test-Path $typedPaths){
+        $tpItems=Get-ItemProperty -Path $typedPaths -ErrorAction SilentlyContinue
+        foreach($prop in $tpItems.PSObject.Properties){
+            if($prop.Name -match "PSPath|PS"){continue}
+            if($prop.Value -and "$($prop.Value)" -match $keywords){
+                $results+=[PSCustomObject]@{Tipo="TYPED_PATH";Nombre=$prop.Name;Ruta="$($prop.Value)";Match="typed"}
+                Write-Evidence "[CAPA6] TYPED_PATH: $($prop.Value)"
+            }
+        }
+    }
     return $results
 }
 
-# ============================================
-# CAPA 7: PAPELERA + ARCHIVOS ELIMINADOS
-# ============================================
-
+#============================================================
+#CAPA 7: PAPELERA + ARCHIVOS ELIMINADOS (MEJORADA)
+#============================================================
 function Scan-RecycleBinDeep {
-    $results = @()
+    $results=@()
     Write-Evidence "[CAPA7] Analizando papelera y archivos eliminados..."
-    
-    $hace2h = (Get-Date).AddMinutes(-120)
-    
-    try {
-        $shell = New-Object -ComObject Shell.Application
-        $recycle = $shell.NameSpace(0xa)
-        if ($recycle) {
-            $items = $recycle.Items()
-            foreach ($item in $items) {
-                $name = $item.Name
-                $date = $item.ModifyDate
-                $match = $Global:CheatKeywords | Where-Object { $name -match $_ } | Select-Object -First 1
-                if ($match -or $date -gt $hace2h) {
-                    $results += [PSCustomObject]@{ Tipo = "PAPELERA"; Nombre = $name; Fecha = $date; RutaOriginal = $item.Path; Match = $match }
+    $hace2h=(Get-Date).AddMinutes(-120)
+    try{
+        $shell=New-Object -ComObject Shell.Application
+        $recycle=$shell.NameSpace(0xa)
+        if($recycle){
+            $items=$recycle.Items()
+            foreach($item in $items){
+                $name=$item.Name
+                $date=$item.ModifyDate
+                $match=$Global:CheatKeywords|Where-Object{$name -match $_}|Select-Object -First 1
+                if($match -or $date -gt $hace2h){
+                    $results+=[PSCustomObject]@{Tipo="PAPELERA";Nombre=$name;Fecha=$date;RutaOriginal=$item.Path;Match=$match}
                     Write-Evidence "[CAPA7] PAPELERA: $name $(if($match){'match:'+$match})"
                 }
             }
         }
-    } catch {}
-    
-    try {
-        $tempFiles = Get-ChildItem -Path "$env:USERPROFILE\AppData\Local\Temp" -ErrorAction SilentlyContinue |
-            Where-Object { $_.Length -gt 5MB -and $_.LastWriteTime -gt $hace2h }
-        foreach ($f in $tempFiles) {
-            $match = $Global:CheatKeywords | Where-Object { $f.Name -match $_ } | Select-Object -First 1
-            $results += [PSCustomObject]@{ Tipo = "TEMP_BIG"; Nombre = $f.Name; Ruta = $f.FullName; Tamano = "$([math]::Round($f.Length/1MB,1)) MB"; Match = $match }
-            if ($match) { Write-Evidence "[CAPA7] TEMP_BIG: $($f.FullName)" }
+    }catch{}
+    try{
+        $tempFiles=Get-ChildItem -Path "$env:USERPROFILE\AppData\Local\Temp" -ErrorAction SilentlyContinue|
+            Where-Object{$_.Length -gt 5MB -and $_.LastWriteTime -gt $hace2h}
+        foreach($f in $tempFiles){
+            $match=$Global:CheatKeywords|Where-Object{$f.Name -match $_}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="TEMP_CHEAT";Nombre=$f.Name;Ruta=$f.FullName;Tamano="$([math]::Round($f.Length/1MB,1)) MB";Match=$match}
+                Write-Evidence "[CAPA7] TEMP_CHEAT: $($f.FullName)"
+            }
         }
-    } catch {}
-    
-    try {
-        if (Test-Path "$env:USERPROFILE\.minecraft\logs") {
-            $logs = Get-ChildItem "$env:USERPROFILE\.minecraft\logs" -Filter "*.log" -ErrorAction SilentlyContinue
-            foreach ($l in $logs) {
-                $content = Get-Content $l.FullName -Tail 500 -ErrorAction SilentlyContinue
-                foreach ($kw in $Global:CheatKeywords) {
-                    if ($kw.Length -gt 3 -and $content -match $kw) {
-                        $results += [PSCustomObject]@{ Tipo = "MINECRAFT_LOG"; Archivo = $l.Name; Match = $kw; Lineas = ($content -match $kw).Count }
-                        Write-Evidence "[CAPA7] MINECRAFT_LOG: $($l.Name) match:$kw"
-                        break
+    }catch{}
+    try{
+        $recentPath="$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\Recent"
+        $lnkFiles=Get-ChildItem -Path $recentPath -Filter "*.lnk" -ErrorAction SilentlyContinue|
+            Where-Object{$_.LastWriteTime -gt $hace2h}
+        foreach($lnk in $lnkFiles){
+            $match=$Global:CheatKeywords|Where-Object{$lnk.Name -match $_}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="RECENT_LNK";Nombre=$lnk.Name;Ruta=$lnk.FullName;Tamano="";Match=$match}
+                Write-Evidence "[CAPA7] RECENT_LNK: $($lnk.Name)"
+            }
+        }
+    }catch{}
+    $downloadsPaths=@(
+        "$env:USERPROFILE\Downloads",
+        "$env:USERPROFILE\Desktop"
+    )
+    foreach($dp in $downloadsPaths){
+        if(Test-Path $dp){
+            $files=Get-ChildItem -Path $dp -Include "*.exe","*.dll","*.jar","*.zip","*.rar" -Recurse -ErrorAction SilentlyContinue|
+                Where-Object{$_.LastWriteTime -gt $hace2h}
+            foreach($f in $files){
+                $match=$Global:CheatKeywords|Where-Object{$f.Name -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="RECENT_EXE";Nombre=$f.Name;Ruta=$f.FullName;Tamano="$([math]::Round($f.Length/1KB,1)) KB";Match=$match}
+                    Write-Evidence "[CAPA7] RECENT_EXE: $($f.FullName)"
+                }
+            }
+        }
+    }
+    return $results
+}
+
+#============================================================
+#CAPA 8: AMCACHE + SHIMCACHE + SRUM
+#============================================================
+function Scan-Amcache {
+    $results=@()
+    Write-Evidence "[CAPA8] Escaneando Amcache + ShimCache + SRUM..."
+    $amcachePaths=@(
+        "HKLM:\SOFTWARE\Microsoft\Windows\NT\CurrentVersion\Amcache\Root",
+        "HKLM:\SOFTWARE\Microsoft\Windows\NT\CurrentVersion\Amcache\Root\File"
+    )
+    foreach($ap in $amcachePaths){
+        if(Test-Path $ap){
+            $apps=Get-ChildItem -Path $ap -ErrorAction SilentlyContinue
+            foreach($app in $apps){
+                $props=Get-ItemProperty -Path $app.PSPath -ErrorAction SilentlyContinue
+                $name=$props.PSChildName
+                $lowerName=$name.ToLower()
+                $match=$Global:CheatKeywords|Where-Object{$lowerName -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="AMCACHE";Nombre=$name;Ruta="Amcache";Tamano="";Match=$match}
+                    Write-Evidence "[CAPA8] AMCACHE: $name match:$match"
+                }
+                $path=$props.Path
+                if($path -and $path -match $Global:KeywordRegex){
+                    $results+=[PSCustomObject]@{Tipo="AMCACHE_RUTA";Nombre=$name;Ruta=$path;Tamano="";Match="path"}
+                    Write-Evidence "[CAPA8] AMCACHE_RUTA: $name -> $path"
+                }
+            }
+        }
+    }
+    $shimPath="HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache"
+    if(Test-Path $shimPath){
+        $shimProps=Get-ItemProperty -Path $shimPath -ErrorAction SilentlyContinue
+        foreach($prop in $shimProps.PSObject.Properties){
+            if($prop.Name -match "PSPath|PS|AppCompatCache"){continue}
+            if($prop.Value -is [byte[]]){
+                $str=[System.Text.Encoding]::Unicode.GetString($prop.Value)
+                $match=$Global:CheatKeywords|Where-Object{$str -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="SHIMCACHE";Nombre=$prop.Name;Ruta="AppCompatCache";Tamano="";Match=$match}
+                    Write-Evidence "[CAPA8] SHIMCACHE: $($prop.Name) match:$match"
+                }
+            }
+        }
+    }
+    $srumPath="$env:SystemRoot\System32\sru\SRUDB.dat"
+    if(Test-Path $srumPath){
+        $sr=(Get-Item $srumPath -ErrorAction SilentlyContinue)
+        if($sr -and $sr.LastWriteTime -gt (Get-Date).AddHours(-4)){
+            $results+=[PSCustomObject]@{Tipo="SRUM";Nombre="SRUDB.dat";Ruta=$srumPath;Tamano="$([math]::Round($sr.Length/1MB,1)) MB";Match="Reciente"}
+            Write-Evidence "[CAPA8] SRUM: Actualizado recientemente"
+        }
+    }
+    return $results
+}
+
+#============================================================
+#CAPA 9: NTFS FORENSIC (MFT, USN, ADS)
+#============================================================
+function Scan-NTFSForensic {
+    $results=@()
+    Write-Evidence "[CAPA9] Escaneando NTFS (MFT, USN, ADS)..."
+    $suspStreams=@("Zone.Identifier",":Zone.Identifier:$DATA",":$DATA")
+    $checkPaths=@(
+        "$env:USERPROFILE\Downloads",
+        "$env:USERPROFILE\Desktop",
+        "$env:USERPROFILE\AppData\Roaming\.minecraft",
+        "$env:USERPROFILE\Documents"
+    )
+    foreach($cp in $checkPaths){
+        if(Test-Path $cp){
+            $files=Get-ChildItem -Path $cp -Recurse -Force -ErrorAction SilentlyContinue|
+                Where-Object{-not $_.PSIsContainer -and $_.Length -gt 1KB}
+            foreach($f in $files){
+                try{
+                    $streams=Get-Item -Path $f.FullName -Stream * -ErrorAction SilentlyContinue|
+                        Where-Object{$_.Stream -ne ':$DATA' -and $_.Stream -match "Zone|:hidden|secret|cheat|inject|bypass|vape|wurst|meteor|doomsday|hack"}
+                    foreach($s in $streams){
+                        $results+=[PSCustomObject]@{Tipo="ADS_OCULTO";Nombre=$f.Name;Ruta="$($f.FullName):$($s.Stream)";Tamano="";Match=$s.Stream}
+                        Write-Evidence "[CAPA9] ADS_OCULTO: $($f.FullName):$($s.Stream)"
+                    }
+                }catch{}
+            }
+        }
+    }
+    try{
+        $usnOut=& fsutil usn readjournal C: query mft 2>&1|Out-String
+        if($usnOut -and $usnOut -match "Usn"){
+            $lines=$usnOut -split "`n"
+            foreach($line in $lines|Select-Object -First 50){
+                $match=$Global:CheatKeywords|Where-Object{$line -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="USN_JOURNAL";Nombre="USN";Ruta=$line.Trim();Tamano="";Match=$match}
+                    Write-Evidence "[CAPA9] USN_JOURNAL: $match"
+                }
+            }
+        }
+    }catch{}
+    try{
+        $mftInfo=& fsutil fsinfo ntfsinfo C: 2>&1|Out-String
+        if($mftInfo){
+            $mftSectors=($mftInfo|Select-String -Pattern 'MFT.*').Matches.Value
+            $results+=[PSCustomObject]@{Tipo="MFT_INFO";Nombre="NTFS";Ruta="C:";Tamano="";Match="MFT info retrieved"}
+        }
+    }catch{}
+    try{
+        $drive=Get-Item "C:\" -ErrorAction SilentlyContinue
+        if($drive.Attributes -band [System.IO.FileAttributes]::ReparsePoint){
+            $results+=[PSCustomObject]@{Tipo="DRIVE_INFO";Nombre="C:";Ruta="ReparsePoint";Tamano="";Match="Junction/Symlink"}
+        }
+    }catch{}
+    return $results
+}
+
+#============================================================
+#CAPA 10: NETWORK FORENSICS
+#============================================================
+function Scan-Network {
+    $results=@()
+    Write-Evidence "[CAPA10] Escaneando red (DNS, Firewall, conexiones)..."
+    try{
+        $dnsCache=Get-DnsClientCache -ErrorAction SilentlyContinue
+        foreach($entry in $dnsCache){
+            $name=$entry.Entry.ToLower()
+            $match=$Global:CheatKeywords|Where-Object{$name -like "*$_*"}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="DNS_CHEAT";Nombre=$name;Ruta=$entry.Data;Tamano="";Match=$match}
+                Write-Evidence "[CAPA10] DNS_CHEAT: $name -> $($entry.Data)"
+            }
+            if($name -match "cheat|hack|inject|bypass|vape|wurst|meteor|liquidbounce|download.*client|pastebin|github.*cheat"){
+                $results+=[PSCustomObject]@{Tipo="DNS_SUS";Nombre=$name;Ruta=$entry.Data;Tamano="";Match="DNS suspicious"}
+                Write-Evidence "[CAPA10] DNS_SUS: $name"
+            }
+        }
+    }catch{}
+    try{
+        $conns=Get-NetTCPConnection -ErrorAction SilentlyContinue|
+            Where-Object{$_.State -eq "Established" -and $_.RemoteAddress -ne "127.0.0.1" -and $_.RemoteAddress -ne "::1"}
+        foreach($conn in $conns){
+            $proc=Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+            if($proc){
+                $pn=$proc.ProcessName.ToLower()
+                $match=$Global:CheatKeywords|Where-Object{$pn -like "*$_*"}|Select-Object -First 1
+                if($match){
+                    $results+=[PSCustomObject]@{Tipo="NET_CHEAT";Nombre=$proc.ProcessName;PID=$proc.Id;Ruta="Remote: $($conn.RemoteAddress):$($conn.RemotePort)";Match=$match}
+                    Write-Evidence "[CAPA10] NET_CHEAT: $($proc.ProcessName) -> $($conn.RemoteAddress):$($conn.RemotePort)"
+                }
+            }
+        }
+    }catch{}
+    try{
+        $fwRules=Get-NetFirewallRule -Direction Inbound -Enabled True -Action Allow -ErrorAction SilentlyContinue|
+            Where-Object{$_.DisplayName -match $Global:KeywordRegex}
+        foreach($rule in $fwRules){
+            $results+=[PSCustomObject]@{Tipo="FW_RULE";Nombre=$rule.DisplayName;Ruta="Inbound Allow";Tamano="";Match="firewall"}
+            Write-Evidence "[CAPA10] FW_RULE: $($rule.DisplayName)"
+        }
+    }catch{}
+    return $results
+}
+
+#============================================================
+#CAPA 11: BROWSER FORENSICS
+#============================================================
+function Scan-BrowserForensics {
+    $results=@()
+    Write-Evidence "[CAPA11] Escaneando navegadores..."
+    $browserPaths=@(
+        @{Name="Chrome";Path="$env:USERPROFILE\AppData\Local\Google\Chrome\User Data\Default\History"},
+        @{Name="Edge";Path="$env:USERPROFILE\AppData\Local\Microsoft\Edge\User Data\Default\History"},
+        @{Name="Brave";Path="$env:USERPROFILE\AppData\Local\BraveSoftware\Brave-Browser\User Data\Default\History"},
+        @{Name="Opera";Path="$env:USERPROFILE\AppData\Roaming\Opera Software\Opera Stable\History"},
+        @{Name="Firefox";Path="$env:USERPROFILE\AppData\Roaming\Mozilla\Firefox\Profiles"}
+    )
+    foreach($bp in $browserPaths){
+        if($bp.Name -eq "Firefox"){
+            if(Test-Path $bp.Path){
+                $profiles=Get-ChildItem -Path $bp.Path -Directory -ErrorAction SilentlyContinue|
+                    Where-Object{$_.Name -match ".*\.default"}
+                foreach($prof in $profiles){
+                    $historyFile="$($prof.FullName)\places.sqlite"
+                    if(Test-Path $historyFile){
+                        $results+=[PSCustomObject]@{Tipo="BROWSER_DB";Nombre="Firefox ($($prof.Name))";Ruta=$historyFile;Tamano="";Match="SQLite"}
+                        Write-Evidence "[CAPA11] BROWSER: Firefox $historyFile"
+                    }
+                }
+            }
+        }else{
+            if(Test-Path $bp.Path){
+                $histItem=Get-Item $bp.Path -ErrorAction SilentlyContinue
+                if($histItem){
+                    $results+=[PSCustomObject]@{Tipo="BROWSER_DB";Nombre=$bp.Name;Ruta=$bp.Path;Tamano="$([math]::Round($histItem.Length/1KB,1)) KB";Match="SQLite"}
+                    Write-Evidence "[CAPA11] BROWSER: $($bp.Name) $($bp.Path)"
+                }
+            }
+        }
+    }
+    $stringsPath=Join-Path $Global:TempToolsPath "strings.exe"
+    if(Test-Path $stringsPath){
+        foreach($bp in $browserPaths){
+            if($bp.Name -ne "Firefox" -and (Test-Path $bp.Path)){
+                try{
+                    $urlStrings=& $stringsPath -n 10 $bp.Path 2>&1|
+                        Select-String -Pattern "http|https" -SimpleMatch|
+                        Where-Object{$_.Line -match $Global:KeywordRegex}|
+                        Select-Object -First 5
+                    foreach($us in $urlStrings){
+                        $results+=[PSCustomObject]@{Tipo="BROWSER_URL";Nombre=$bp.Name;Ruta=$us.Line.Substring(0,[Math]::Min(150,$us.Line.Length));Tamano="";Match="URL"}
+                        Write-Evidence "[CAPA11] BROWSER_URL: $($us.Line.Substring(0,100))"
+                    }
+                }catch{}
+            }
+        }
+    }
+    return $results
+}
+
+#============================================================
+#CAPA 12: WINDOWS DEFENDER
+#============================================================
+function Scan-Defender {
+    $results=@()
+    Write-Evidence "[CAPA12] Escaneando Windows Defender..."
+    $exclPath="HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions"
+    if(Test-Path $exclPath){
+        $exclTypes=@("Extensions","Paths","Processes")
+        foreach($et in $exclTypes){
+            $etPath="$exclPath\$et"
+            if(Test-Path $etPath){
+                $exclItems=Get-ItemProperty -Path $etPath -ErrorAction SilentlyContinue
+                foreach($prop in $exclItems.PSObject.Properties){
+                    if($prop.Name -match "PSPath|PS"){continue}
+                    $val="$($prop.Value)"
+                    $match=$Global:CheatKeywords|Where-Object{$val -like "*$_*" -or $prop.Name -like "*$_*"}|Select-Object -First 1
+                    if($match){
+                        $results+=[PSCustomObject]@{Tipo="DEFENDER_EXCL";Nombre=$prop.Name;Ruta=$val;Tamano="";Match=$match}
+                        Write-Evidence "[CAPA12] DEFENDER_EXCL: $et\$($prop.Name) = $val"
                     }
                 }
             }
         }
-    } catch {}
-    
-    return $results
-}
-
-# ============================================
-# ANTIFORENSE
-# ============================================
-
-function Get-AntiForensicMarkers {
-    $results = @()
-    
-    try {
-        $cmdline = (Get-WmiObject Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue) |
-            Select-Object CommandLine, ProcessId, @{N="User";E={(Get-WmiObject Win32_Process -Filter "ProcessId=$($_.ProcessId)").GetOwner().User}}
-        foreach ($c in $cmdline) {
-            if ($c.CommandLine -match '-WindowStyle\s+Hidden|-ExecutionPolicy\s+Bypass|-EncodedCommand|-E\s+|-W\s+Hidden|\-EP\s+Bypass') {
-                $results += [PSCustomObject]@{ Tipo = "PS_HIDDEN"; PID = $c.ProcessId; Usuario = $c.User; Linea = ($c.CommandLine -replace '\s+',' ').Substring(0,[Math]::Min(150,$c.CommandLine.Length)) }
-                Write-Evidence "[ANTIFORENSE] PS oculto PID:$($c.ProcessId)"
+    }
+    try{
+        $threats=Get-MpThreatDetection -ErrorAction SilentlyContinue|
+            Where-Object{$_.InitialDetectionTime -gt (Get-Date).AddHours(-24)}
+        foreach($t in $threats){
+            $results+=[PSCustomObject]@{Tipo="DEFENDER_THREAT";Nombre="Threat";Ruta=$t.Resources;Tamano="";Match=$t.ThreatID}
+            Write-Evidence "[CAPA12] DEFENDER_THREAT: $($t.ThreatID)"
+        }
+    }catch{}
+    try{
+        $mpStatus=Get-MpComputerStatus -ErrorAction SilentlyContinue
+        if($mpStatus){
+            $results+=[PSCustomObject]@{Tipo="DEFENDER_STATUS";Nombre="RealTimeProtection";Ruta="$(if($mpStatus.RealTimeProtectionEnabled){'ON'}else{'OFF'})";Tamano="";Match="status"}
+            if(-not $mpStatus.RealTimeProtectionEnabled){
+                Write-Evidence "[CAPA12] DEFENDER: RealTimeProtection OFF"
             }
         }
-        
-        $eventsLogClear = Get-WinEvent -LogName "System" -FilterXPath "*[System[EventID=1102 or EventID=1104 or EventID=104]]" -MaxEvents 50 -ErrorAction SilentlyContinue |
-            Where-Object { $_.TimeCreated -gt ((Get-Date).AddHours(-4)) }
-        foreach ($e in $eventsLogClear) {
-            $results += [PSCustomObject]@{ Tipo = "LOG_CLEAR"; Hora = $e.TimeCreated; EventID = $e.Id }
-            Write-Evidence "[ANTIFORENSE] Log limpiado EventID:$($e.Id) $($e.TimeCreated)"
+    }catch{}
+    $defenderDir="$env:ProgramData\Microsoft\Windows Defender\Support"
+    if(Test-Path $defenderDir){
+        $defenderLogs=Get-ChildItem -Path $defenderDir -Filter "*.log" -ErrorAction SilentlyContinue|
+            Where-Object{$_.LastWriteTime -gt (Get-Date).AddHours(-2)}
+        foreach($dl in $defenderLogs){
+            $content=Get-Content $dl.FullName -Tail 100 -ErrorAction SilentlyContinue
+            $match=$content|Where-Object{$_ -match "vape|wurst|meteor|inject|cheat|hack"}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="DEFENDER_LOG";Nombre=$dl.Name;Ruta=$dl.FullName;Tamano="";Match="cheat detected"}
+                Write-Evidence "[CAPA12] DEFENDER_LOG: $($dl.Name)"
+            }
         }
-    } catch {}
-    
+    }
     return $results
 }
 
-# ============================================
-# INTEGRIDAD Y BACKUP
-# ============================================
+#============================================================
+#CAPA 13: USB + REMOVABLE MEDIA
+#============================================================
+function Scan-USB {
+    $results=@()
+    Write-Evidence "[CAPA13] Escaneando USB..."
+    $usbstorPath="HKLM:\SYSTEM\CurrentControlSet\Enum\USBSTOR"
+    if(Test-Path $usbstorPath){
+        $devices=Get-ChildItem -Path $usbstorPath -ErrorAction SilentlyContinue
+        foreach($dev in $devices){
+            $versions=Get-ChildItem -Path $dev.PSPath -ErrorAction SilentlyContinue
+            foreach($ver in $versions){
+                $props=Get-ItemProperty -Path $ver.PSPath -ErrorAction SilentlyContinue
+                $friendlyName=$props.FriendlyName
+                $lastConnected=$props.MachineGuid
+                $results+=[PSCustomObject]@{Tipo="USB_DEVICE";Nombre=$friendlyName;Ruta=$ver.PSChildName;Tamano="";Match="USBSTOR"}
+                Write-Evidence "[CAPA13] USB_DEVICE: $friendlyName"
+            }
+        }
+    }
+    $mountPoints="HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2"
+    if(Test-Path $mountPoints){
+        $mpItems=Get-ChildItem -Path $mountPoints -ErrorAction SilentlyContinue
+        foreach($mp in $mpItems){
+            $mpLabel=Get-ItemProperty -Path $mp.PSPath -Name "(default)" -ErrorAction SilentlyContinue
+            $results+=[PSCustomObject]@{Tipo="MOUNT_POINT";Nombre=$mp.PSChildName;Ruta="MountPoints2";Tamano="";Match="removable"}
+            Write-Evidence "[CAPA13] MOUNT_POINT: $($mp.PSChildName)"
+        }
+    }
+    try{
+        $setupApi="$env:SystemRoot\Inf\setupapi.dev.log"
+        if(Test-Path $setupApi){
+            $recentSetup=Get-Content $setupApi -Tail 500 -ErrorAction SilentlyContinue|
+                Where-Object{$_ -match "USB|disk|volume" -and $_ -match "install"}
+            if($recentSetup.Count -gt 0){
+                $results+=[PSCustomObject]@{Tipo="SETUPAPI";Nombre="setupapi.dev.log";Ruta=$setupApi;Tamano="";Match="USB install events"}
+                Write-Evidence "[CAPA13] SETUPAPI: $($recentSetup.Count) USB install events"
+            }
+        }
+    }catch{}
+    return $results
+}
 
+#============================================================
+#CAPA 14: JUMPLIST + RECENT + SHELLBAGS
+#============================================================
+function Scan-JumpListRecent {
+    $results=@()
+    Write-Evidence "[CAPA14] Escaneando JumpList + Recent + ShellBags..."
+    $autoDest="$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\Recent\AutomaticDestinations"
+    if(Test-Path $autoDest){
+        $jlFiles=Get-ChildItem -Path $autoDest -ErrorAction SilentlyContinue
+        $stringsPath=Join-Path $Global:TempToolsPath "strings.exe"
+        foreach($jl in $jlFiles){
+            if(Test-Path $stringsPath){
+                try{
+                    $strs=& $stringsPath -n 5 $jl.FullName 2>&1|
+                        Where-Object{$_ -match $Global:KeywordRegex}|
+                        Select-Object -First 5
+                    foreach($s in $strs){
+                        $results+=[PSCustomObject]@{Tipo="JUMPLIST";Nombre=$jl.Name;Ruta="$s";Tamano="";Match="JumpList entry"}
+                        Write-Evidence "[CAPA14] JUMPLIST: $($jl.Name) -> $s"
+                    }
+                }catch{}
+            }
+        }
+    }
+    $customDest="$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\Recent\CustomDestinations"
+    if(Test-Path $customDest){
+        $cdFiles=Get-ChildItem -Path $customDest -ErrorAction SilentlyContinue
+        foreach($cd in $cdFiles){
+            if($cd.Name -match $Global:KeywordRegex){
+                $results+=[PSCustomObject]@{Tipo="JUMPLIST_CUSTOM";Nombre=$cd.Name;Ruta=$cd.FullName;Tamano="";Match="custom"}
+            }
+        }
+    }
+    $recentPath="$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\Recent"
+    if(Test-Path $recentPath){
+        $lnks=Get-ChildItem -Path $recentPath -Filter "*.lnk" -ErrorAction SilentlyContinue|
+            Sort-Object LastWriteTime -Descending|Select-Object -First 100
+        foreach($lnk in $lnks){
+            $match=$Global:CheatKeywords|Where-Object{$lnk.Name -like "*$_*"}|Select-Object -First 1
+            if($match){
+                $results+=[PSCustomObject]@{Tipo="RECENT_FILE";Nombre=$lnk.Name;Ruta=$lnk.FullName;Tamano="";Match=$match}
+                Write-Evidence "[CAPA14] RECENT_FILE: $($lnk.Name)"
+            }
+        }
+    }
+    $shellBagsPath="HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\Bags"
+    if(Test-Path $shellBagsPath){
+        $bagCount=(Get-ChildItem -Path $shellBagsPath -Recurse -ErrorAction SilentlyContinue).Count
+        if($bagCount -gt 0){
+            $results+=[PSCustomObject]@{Tipo="SHELLBAGS";Nombre="ShellBags";Ruta=$shellBagsPath;Tamano="";Match="Entries: $bagCount"}
+            Write-Evidence "[CAPA14] SHELLBAGS: $bagCount entries"
+        }
+    }
+    $bagMRU="HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU"
+    if(Test-Path $bagMRU){
+        $results+=[PSCustomObject]@{Tipo="BAGMRU";Nombre="BagMRU";Ruta=$bagMRU;Tamano="";Match="MRU"}
+    }
+    return $results
+}
+
+#============================================================
+#CAPA 15: ANTI-BYPASS (DLL hijack, fileless, VM, stego)
+#============================================================
+function Scan-AntiBypass {
+    $results=@()
+    Write-Evidence "[CAPA15] Escaneando anti-bypass..."
+    $dllHijackPaths=@(
+        "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\KnownDLLs",
+        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Windows\AppInit_DLLs",
+        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\Notify",
+        "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options"
+    )
+    foreach($dhp in $dllHijackPaths){
+        if(Test-Path $dhp){
+            $items=Get-ChildItem -Path $dhp -Recurse -ErrorAction SilentlyContinue
+            foreach($item in $items){
+                try{
+                    $props=Get-ItemProperty -Path $item.PSPath -ErrorAction SilentlyContinue
+                    foreach($prop in $props.PSObject.Properties){
+                        if($prop.Name -match "PSPath|PS"){continue}
+                        $val="$($prop.Value)"
+                        if($val -match "\.dll" -and $val -notmatch "System32|SysWOW64|Windows"){
+                            $match=$Global:CheatKeywords|Where-Object{$val -like "*$_*"}|Select-Object -First 1
+                            $results+=[PSCustomObject]@{Tipo="DLL_HIJACK";Nombre=$prop.Name;Ruta=$val;Tamano="";Match=$(if($match){$match}else{"Non-standard path"})}
+                            Write-Evidence "[CAPA15] DLL_HIJACK: $val"
+                        }
+                    }
+                }catch{}
+            }
+        }
+    }
+    try{
+        $psProcesses=Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue
+        foreach($proc in $psProcesses){
+            if($proc.CommandLine -match '-WindowStyle\s+Hidden|-ExecutionPolicy\s+Bypass|-EncodedCommand|-E\s+|-W\s+Hidden|-EP\s+Bypass'){
+                $results+=[PSCustomObject]@{Tipo="PS_HIDDEN";PID=$proc.ProcessId;Ruta=$proc.CommandLine.Substring(0,[Math]::Min(150,$proc.CommandLine.Length));Tamano="";Match="encoded/hidden"}
+                Write-Evidence "[CAPA15] PS_HIDDEN PID:$($proc.ProcessId)"
+            }
+        }
+    }catch{}
+    $vmIndicators=@("vmware","virtualbox","vbox","hyper-v","qemu","xen","sandboxie","vmtools","vm3dservice","vmusr","vmwaretray","vmwareuser","vboxservice","vboxtray")
+    $procs=Get-Process -ErrorAction SilentlyContinue
+    foreach($p in $procs){
+        $pn=$p.ProcessName.ToLower()
+        $vmMatch=$vmIndicators|Where-Object{$pn -like "*$_*"}|Select-Object -First 1
+        if($vmMatch){
+            $results+=[PSCustomObject]@{Tipo="VM_DETECT";Nombre=$p.ProcessName;PID=$p.Id;Ruta="";Tamano="";Match=$vmMatch}
+            Write-Evidence "[CAPA15] VM_DETECT: $($p.ProcessName) ($vmMatch)"
+        }
+    }
+    try{
+        $vmWmi=Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+        if($vmWmi.Manufacturer -match "VMware|VirtualBox|QEMU|Xen|Microsoft Corporation"){
+            $results+=[PSCustomObject]@{Tipo="VM_WMI";Nombre=$vmWmi.Manufacturer;Ruta=$vmWmi.Model;Tamano="";Match="VM detected"}
+            Write-Evidence "[CAPA15] VM_WMI: $($vmWmi.Manufacturer) $($vmWmi.Model)"
+        }
+    }catch{}
+    try{
+        $bitlocker=Manage-Bde -Status C: 2>&1|Out-String
+        if($bitlocker -match "Protection Status: Protection On"){
+            $results+=[PSCustomObject]@{Tipo="BITLOCKER";Nombre="C:";Ruta="BitLocker";Tamano="";Match="Encrypted"}
+            Write-Evidence "[CAPA15] BITLOCKER: C: encrypted"
+        }
+    }catch{}
+    $prefetchDir="$env:SystemRoot\Prefetch"
+    $bamPath="HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings"
+    $recentDir="$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\Recent"
+    $pfCount=0;$bamCount=0;$recentCount=0
+    try{$pfCount=(Get-ChildItem -Path $prefetchDir -Filter "*.pf" -ErrorAction SilentlyContinue).Count}catch{}
+    try{
+        if(Test-Path $bamPath){
+            $bamUsers=Get-ChildItem -Path $bamPath -ErrorAction SilentlyContinue
+            foreach($bu in $bamUsers){
+                $items=Get-ItemProperty -Path "$bamPath\$($bu.PSChildName)" -ErrorAction SilentlyContinue
+                $bamCount+=$items.PSObject.Properties|Where-Object{$_.Name -notmatch "PSPath|PS"}|Measure-Object|Select-Object -ExpandProperty Count
+            }
+        }
+    }catch{}
+    try{$recentCount=(Get-ChildItem -Path $recentDir -Filter "*.lnk" -ErrorAction SilentlyContinue).Count}catch{}
+    $totalArtifacts=$pfCount+$bamCount+$recentCount
+    if($totalArtifacts -lt 10){
+        $results+=[PSCustomObject]@{Tipo="CLEAN_SIGNAL";Nombre="LowArtifacts";Ruta="Prefetch+BAM+Recent";Tamano="";Match="Possible cleanup ($totalArtifacts total)"}
+        Write-Evidence "[CAPA15] CLEAN_SIGNAL: Only $totalArtifacts artifacts found"
+    }
+    $susExtensions=@(".jpg.exe",".png.exe",".pdf.exe",".doc.exe",".mp3.exe",".mp4.exe",".txt.exe",".bat.exe",".cmd.exe",".scr.exe",".com.exe",".pif.exe")
+    $dlPaths=@("$env:USERPROFILE\Downloads","$env:USERPROFILE\Desktop","$env:USERPROFILE\Documents")
+    foreach($dp in $dlPaths){
+        if(Test-Path $dp){
+            $files=Get-ChildItem -Path $dp -Recurse -Force -ErrorAction SilentlyContinue|
+                Where-Object{$_.Name -match "\.(jpg|png|pdf|doc|mp3|mp4|txt|bat|cmd|scr|com|pif)\.exe$"}
+            foreach($f in $files){
+                $results+=[PSCustomObject]@{Tipo="DOUBLE_EXT";Nombre=$f.Name;Ruta=$f.FullName;Tamano="$([math]::Round($f.Length/1KB,1)) KB";Match="Double extension"}
+                Write-Evidence "[CAPA15] DOUBLE_EXT: $($f.FullName)"
+            }
+        }
+    }
+    return $results
+}
+
+#============================================================
+#ANTIFORENSE
+#============================================================
+function Get-AntiForensicMarkers {
+    $results=@()
+    try{
+        $eventsLogClear=Get-WinEvent -LogName "System" -FilterXPath "*[System[EventID=1102 or EventID=1104 or EventID=104]]" -MaxEvents 50 -ErrorAction SilentlyContinue|
+            Where-Object{$_.TimeCreated -gt ((Get-Date).AddHours(-4))}
+        foreach($e in $eventsLogClear){
+            $results+=[PSCustomObject]@{Tipo="LOG_CLEAR";Hora=$e.TimeCreated;EventID=$e.Id}
+            Write-Evidence "[ANTIFORENSE] Log limpiado EventID:$($e.Id) $($e.TimeCreated)"
+        }
+    }catch{}
+    try{
+        $secClear=Get-WinEvent -LogName "Security" -FilterXPath "*[System[EventID=1102]]" -MaxEvents 20 -ErrorAction SilentlyContinue|
+            Where-Object{$_.TimeCreated -gt ((Get-Date).AddHours(-4))}
+        foreach($e in $secClear){
+            $results+=[PSCustomObject]@{Tipo="SEC_CLEAR";Hora=$e.TimeCreated;EventID=$e.Id}
+            Write-Evidence "[ANTIFORENSE] Security log limpiado: $($e.TimeCreated)"
+        }
+    }catch{}
+    return $results
+}
+
+#============================================================
+#INTEGRIDAD Y BACKUP
+#============================================================
 function Test-ScriptIntegrity {
-    if (-not $Global:ScriptHashBase -or $Global:ScriptHashBase -eq "NO_DISPONIBLE") { return $false }
-    try {
-        $currentHash = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
-        if ($currentHash -ne $Global:ScriptHashBase) {
+    if(-not $Global:ScriptHashBase -or $Global:ScriptHashBase -eq "NO_DISPONIBLE"){return $false}
+    try{
+        $currentHash=(Get-FileHash -Path $PSCommandPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+        if($currentHash -ne $Global:ScriptHashBase){
             Write-Evidence "[!] INTEGRIDAD COMPROMETIDA - hash cambio!"
-            if ($Global:ModoSigiloso) {
-                $evidencia = @"
-Script comprometido en $env:COMPUTERNAME
-Hash original: $($Global:ScriptHashBase)
-Hash actual: $currentHash
-Fecha: $(Get-Date)
-"@
-                try { Write-EventLog -LogName "Application" -Source "AC-BQGE" -EntryType Warning -EventId 9999 -Message $evidencia } catch {}
-                try { $evidencia | Out-File -FilePath "$env:USERPROFILE\AppData\Local\Temp\_ac_evidencia_$(Get-Date -Format 'yyyyMMddHHmmss').txt" -Encoding UTF8 } catch {}
+            if($Global:ModoSigiloso){
+                $evidencia="Script comprometido en $env:COMPUTERNAME`nHash original: $($Global:ScriptHashBase)`nHash actual: $currentHash`nFecha: $(Get-Date)"
+                try{Write-EventLog -LogName "Application" -Source "AC-BQGE" -EntryType Warning -EventId 9999 -Message $evidencia}catch{}
+                try{$evidencia|Out-File -FilePath "$env:USERPROFILE\AppData\Local\Temp\_ac_evidencia_$(Get-Date -Format 'yyyyMMddHHmmss').txt" -Encoding UTF8}catch{}
             }
             return $false
         }
         return $true
-    } catch { return $false }
+    }catch{return $false}
 }
 
 function Set-EvidenceBackup {
-    $backupDir = "$env:USERPROFILE\AppData\Local\Temp\_ac_backup"
-    New-Item -ItemType Directory -Path $backupDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $backupDir="$env:USERPROFILE\AppData\Local\Temp\_ac_backup"
+    New-Item -ItemType Directory -Path $backupDir -Force|Out-Null
     attrib +h $backupDir /s /d
-    
-    $reportPath = "$backupDir\report_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-    $Global:LogFile = $reportPath
-    
-    if ($Global:Evidencias.Count -gt 0) {
-        $Global:Evidencias | Out-File -FilePath $reportPath -Encoding UTF8
+    $reportPath="$backupDir\report_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $Global:LogFile=$reportPath
+    if($Global:Evidencias.Count -gt 0){
+        $Global:Evidencias|Out-File -FilePath $reportPath -Encoding UTF8
     }
 }
 
 function Backup-Script {
-    $backupDir = "$env:USERPROFILE\AppData\Local\Temp\_ac_script"
-    New-Item -ItemType Directory -Path $backupDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $backupDir="$env:USERPROFILE\AppData\Local\Temp\_ac_script"
+    New-Item -ItemType Directory -Path $backupDir -Force|Out-Null
     attrib +h $backupDir /s /d
-    
-    try {
-        Copy-Item -Path $PSCommandPath -Destination "$backupDir\ac_backup.ps1" -Force -ErrorAction SilentlyContinue
-        $Global:BackupCreated = $true
-    } catch {}
+    try{
+        Copy-Item -Path $PSCommandPath -Destination "$backupDir\ac_backup.ps1" -Force
+        $Global:BackupCreated=$true
+    }catch{}
 }
 
-# ============================================
-# VISUALIZACION
-# ============================================
-
+#============================================================
+#VISUALIZACION
+#============================================================
 function Show-Results($results) {
-    $layers = $results | Group-Object Tipo
-    
+    $layers=$results|Group-Object Tipo
     Write-Host ""
-    Write-Host "  ========== RESULTADOS ==========" -ForegroundColor Cyan
-    
-    $total = $results.Count
+    Write-Host "  ╔══════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "  ║           RESULTADOS                     ║" -ForegroundColor Cyan
+    Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
+    $total=$results.Count
     Write-Host "  Total hallazgos: $total" -ForegroundColor Yellow
-    
-    foreach ($layer in $layers) {
-        $color = switch -Wildcard ($layer.Name) {
-            "PROCESO*" { "Red" }
-            "INYECTOR*" { "Red" }
-            "DLL*" { "Red" }
-            "CARPETA_CHEAT*" { "Red" }
-            "MOD_SOSPECHOSO*" { "Red" }
-            "MOD_HEURISTICO*" { "Yellow" }
-            "VERSION_CHEAT*" { "Red" }
-            "CONFIG_CHEAT*" { "Yellow" }
-            "LOG_CHEAT*" { "DarkYellow" }
-            "CRASH_CHEAT*" { "DarkGray" }
-            "LAUNCHER_ITEM*" { "Yellow" }
-            "REGISTRO*" { "Yellow" }
-            "SERVICIO*" { "Red" }
-            "TAREA*" { "Yellow" }
-            "DRIVER*" { "Red" }
-            "HOOK*" { "Magenta" }
-            "BAM*" { "Gray" }
-            "PREFETCH*" { "Gray" }
-            "EVENTO*" { "DarkGray" }
-            "PAPELERA*" { "DarkYellow" }
-            "TEMP*" { "DarkYellow" }
-            "MINECRAFT*" { "DarkYellow" }
-            "PS_HIDDEN*" { "Red" }
-            "LOG_CLEAR*" { "Red" }
-            default { "White" }
+    Write-Host ""
+    foreach($layer in $layers){
+        $color=switch -Wildcard($layer.Name){
+            "PROCESO*"{"Red"}"INYECTOR*"{"Red"}"DLL*"{"Red"}"DLL_NO*"{"Magenta"}
+            "PADRE*"{"Red"}"STRING*"{"Magenta"}
+            "CARPETA*"{"Red"}"MOD_SOSPECHOSO*"{"Red"}"MOD_HEURISTICO*"{"Yellow"}
+            "VERSION*"{"Red"}"CONFIG*"{"Yellow"}"LOG*"{"DarkYellow"}"CRASH*"{"DarkGray"}
+            "LAUNCHER*"{"Yellow"}"OPTIONS*"{"Yellow"}"USERCACHE*"{"DarkGray"}
+            "REGISTRO*"{"Yellow"}"APPINIT*"{"Red"}"IFEO*"{"Red"}
+            "KNOWN*"{"Red"}"WINLOGON*"{"Red"}"SERVICIO*"{"Red"}
+            "TAREA*"{"Yellow"}"AUTORUNS*"{"Yellow"}
+            "DRIVER*"{"Red"}"HOOK*"{"Magenta"}
+            "BAM*"{"Gray"}"PREFETCH*"{"Gray"}"EVENTO*"{"DarkGray"}
+            "USERASSIST*"{"Cyan"}"RECENT*"{"DarkGray"}"TYPED*"{"DarkGray"}
+            "PAPELERA*"{"DarkYellow"}"TEMP*"{"DarkYellow"}"RECENT_EXE*"{"Red"}
+            "AMCACHE*"{"Cyan"}"SHIM*"{"Cyan"}"SRUM*"{"Gray"}
+            "ADS*"{"Magenta"}"USN*"{"Cyan"}"MFT*"{"Cyan"}
+            "DNS*"{"Yellow"}"NET*"{"Yellow"}"FW*"{"Yellow"}
+            "BROWSER*"{"White"}
+            "DEFENDER*"{"Yellow"}
+            "USB*"{"White"}"MOUNT*"{"White"}"SETUPAPI*"{"Gray"}
+            "JUMPLIST*"{"DarkGray"}"SHELLBAG*"{"Gray"}
+            "DLL_HIJACK*"{"Red"}"PS_HIDDEN*"{"Red"}
+            "VM*"{"Magenta"}"BITLOCKER*"{"Magenta"}
+            "DOUBLE*"{"Red"}"CLEAN*"{"Red"}
+            "LOG_CLEAR*"{"Red"}"SEC_CLEAR*"{"Red"}
+            default{"White"}
         }
         Write-Host "  [$($layer.Name)] $($layer.Count)" -ForegroundColor $color
     }
-    
-    Write-Host "  =================================" -ForegroundColor Cyan
     Write-Host ""
-    
-    $i = 1
-    foreach ($r in $results) {
-        Write-Host "  $i. [$($r.Tipo)] " -NoNewline -ForegroundColor Cyan
-        if ($r.Nombre) { Write-Host "$($r.Nombre) " -NoNewline -ForegroundColor White }
-        if ($r.PID) { Write-Host "PID:$($r.PID) " -NoNewline -ForegroundColor Gray }
-        if ($r.Proceso) { Write-Host "$($r.Proceso) " -NoNewline -ForegroundColor White }
-        if ($r.DLL) { Write-Host "$($r.DLL) " -NoNewline -ForegroundColor Red }
-        if ($r.Ruta) { Write-Host "Ruta:$($r.Ruta) " -NoNewline -ForegroundColor DarkGray }
-        if ($r.Valor) { Write-Host "Valor:$($r.Valor) " -NoNewline -ForegroundColor Yellow }
-        if ($r.Match) { Write-Host "[$($r.Match)]" -NoNewline -ForegroundColor Red }
-        if ($r.Hora) { Write-Host "$($r.Hora) " -NoNewline -ForegroundColor DarkGray }
-        if ($r.Usuario) { Write-Host "User:$($r.Usuario) " -NoNewline -ForegroundColor DarkGray }
-        if ($r.Estado) { Write-Host "Estado:$($r.Estado) " -NoNewline -ForegroundColor Gray }
-        if ($r.Accion) { Write-Host "Accion:$($r.Accion) " -NoNewline -ForegroundColor Yellow }
-        if ($r.Tamano) { Write-Host "Size:$($r.Tamano) " -NoNewline -ForegroundColor DarkGray }
-        if ($r.Linea) { Write-Host "Linea:$($r.Linea) " -NoNewline }
-        if ($r.Lineas) { Write-Host "Lineas:$($r.Lineas) " -NoNewline }
+    Write-Host "  ─────────────────────────────────────────" -ForegroundColor DarkGray
+    $i=1
+    foreach($r in $results){
+        Write-Host "  $i. " -NoNewline -ForegroundColor DarkGray
+        Write-Host "[$($r.Tipo)] " -NoNewline -ForegroundColor Cyan
+        if($r.Nombre){Write-Host "$($r.Nombre) " -NoNewline -ForegroundColor White}
+        if($r.PID){Write-Host "PID:$($r.PID) " -NoNewline -ForegroundColor Gray}
+        if($r.Proceso){Write-Host "$($r.Proceso) " -NoNewline -ForegroundColor White}
+        if($r.DLL){Write-Host "$($r.DLL) " -NoNewline -ForegroundColor Red}
+        if($r.Ruta){Write-Host "$($r.Ruta) " -NoNewline -ForegroundColor DarkGray}
+        if($r.Valor){Write-Host "$($r.Valor) " -NoNewline -ForegroundColor Yellow}
+        if($r.Match){Write-Host "[$($r.Match)]" -NoNewline -ForegroundColor Red}
+        if($r.Hora){Write-Host "$($r.Hora) " -NoNewline -ForegroundColor DarkGray}
+        if($r.Usuario){Write-Host "U:$($r.Usuario) " -NoNewline -ForegroundColor DarkGray}
+        if($r.Estado){Write-Host "E:$($r.Estado) " -NoNewline -ForegroundColor Gray}
+        if($r.Accion){Write-Host "A:$($r.Accion) " -NoNewline -ForegroundColor Yellow}
+        if($r.Tamano){Write-Host "$($r.Tamano) " -NoNewline -ForegroundColor DarkGray}
+        if($r.Mensaje){Write-Host "$($r.Mensaje) " -NoNewline}
         Write-Host ""
         $i++
     }
 }
 
-# ============================================
-# ORQUESTADOR Y MENU
-# ============================================
-
+#============================================================
+#ORQUESTADOR
+#============================================================
 function Invoke-AllLayers {
-    param([switch]$Full)
-    
-    $allResults = @()
-    
-    $layers = @(
-        { $results = Scan-Processes; return $results },
-        { $results = Scan-Memory; return $results },
-        { $results = Scan-MinecraftFolder; return $results },
-        { $results = Scan-Registry; return $results },
-        { $results = Scan-Kernel; return $results },
-        { $results = Scan-ExecutionHistory; return $results },
-        { $results = Scan-RecycleBinDeep; return $results }
+    $allResults=@()
+    $layerNames=@(
+        "Procesos","Memoria/DLLs",".minecraft Forensic","Registro/Servicios",
+        "Kernel","Execution History","Recycle Bin","Amcache/ShimCache",
+        "NTFS Forensic","Network","Browser","Defender",
+        "USB","JumpList/Recent","Anti-Bypass"
     )
-    
-    $totalLayers = $layers.Count
-    $current = 0
-    
-    foreach ($layer in $layers) {
+    $layerFuncs=@(
+        {Scan-Processes},
+        {Scan-Memory},
+        {Scan-MinecraftFolder},
+        {Scan-Registry},
+        {Scan-Kernel},
+        {Scan-ExecutionHistory},
+        {Scan-RecycleBinDeep},
+        {Scan-Amcache},
+        {Scan-NTFSForensic},
+        {Scan-Network},
+        {Scan-BrowserForensics},
+        {Scan-Defender},
+        {Scan-USB},
+        {Scan-JumpListRecent},
+        {Scan-AntiBypass}
+    )
+    $totalLayers=$layerFuncs.Count
+    $current=0
+    foreach($layer in $layerFuncs){
         $current++
-        Write-Host "  [$current/$totalLayers] Escaneando..." -ForegroundColor Yellow
-        $allResults += & $layer
+        Show-ProgressBar -Current $current -Total $totalLayers -LayerName $layerNames[$current-1]
+        $allResults+=& $layer
     }
-    
-    $allResults += Get-AntiForensicMarkers
-    
+    $allResults+=Get-AntiForensicMarkers
     return $allResults
 }
 
-function Write-DumpReport($results) {
-    $report = @"
-============================================
- AC-BQGE MINECRAFT FORENSIC REPORT
- Fecha: $(Get-Date)
- Equipo: $env:COMPUTERNAME
- Usuario: $env:USERNAME
- Hash Script: $($Global:ScriptHashBase)
- 500+ CLIENTES | 7 CAPAS
-============================================
+#============================================================
+#REPORTE FORENSE
+#============================================================
+function Write-ForensicReport($results) {
+    $elapsed=(Get-Date)-$Global:StartTime
+    $report=@"
+╔══════════════════════════════════════════════════════════════╗
+║          AC-BQGE MINECRAFT FORENSIC REPORT v2.0             ║
+╠══════════════════════════════════════════════════════════════╣
+║ Fecha: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+║ Equipo: $env:COMPUTERNAME
+║ Usuario: $env:USERNAME
+║ OS: $Global:OSVersion Build $Global:OSBuild
+║ Admin: $($Global:IsAdmin)
+║ WSL: $($Global:HasWSL) $(if($Global:HasWSL){"($Global:WSLDistro)"}else{""})
+║ Hash Script: $($Global:ScriptHashBase)
+║ Tiempo: $($elapsed.TotalSeconds.ToString('F1'))s
+║ 16 CAPAS | 500+ CLIENTES | ANTI-BYPASS
+╠══════════════════════════════════════════════════════════════╣
+
+TOTAL HALLAZGOS: $($results.Count)
+
 "@
-    
-    $report += "`nTotal hallazgos: $($results.Count)`n"
-    
-    $layers = $results | Group-Object Tipo
-    foreach ($l in $layers) {
-        $report += "`n[$($l.Name): $($l.Count)]`n"
-        foreach ($r in $l.Group) {
-            $report += "  [$($r.Tipo)] "
-            if ($r.Nombre) { $report += "$($r.Nombre) " }
-            if ($r.PID) { $report += "PID:$($r.PID) " }
-            if ($r.Proceso) { $report += "$($r.Proceso) " }
-            if ($r.DLL) { $report += "DLL:$($r.DLL) " }
-            if ($r.Ruta) { $report += "Ruta:$($r.Ruta) " }
-            if ($r.Valor) { $report += "Valor:$($r.Valor) " }
-            if ($r.Match) { $report += "[$($r.Match)] " }
-            $report += "`n"
+    $layerGroups=$results|Group-Object Tipo
+    foreach($lg in $layerGroups){
+        $report+="`n═══ [$($lg.Name): $($lg.Count)] ═══`n"
+        foreach($r in $lg.Group){
+            $line="  [$($r.Tipo)] "
+            if($r.Nombre){$line+="$($r.Nombre) "}
+            if($r.PID){$line+="PID:$($r.PID) "}
+            if($r.Proceso){$line+="$($r.Proceso) "}
+            if($r.DLL){$line+="DLL:$($r.DLL) "}
+            if($r.Ruta){$line+="Ruta:$($r.Ruta) "}
+            if($r.Valor){$line+="Valor:$($r.Valor) "}
+            if($r.Match){$line+="[$($r.Match)] "}
+            if($r.Hora){$line+="$($r.Hora) "}
+            if($r.Estado){$line+="Estado:$($r.Estado) "}
+            if($r.Tamano){$line+="$($r.Tamano) "}
+            if($r.Mensaje){$line+="$($r.Mensaje) "}
+            $report+="$line`n"
         }
     }
-    
-    $report += "`n============================================`n"
-    
-    $desktop = [Environment]::GetFolderPath("Desktop")
-    $path = "$desktop\AC-BQGE_Report_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
-    $report | Out-File -FilePath $path -Encoding UTF8
-    Write-Host "  Reporte guardado: $path" -ForegroundColor Green
-    
-    if ($Global:ModoSigiloso) {
-        Set-EvidenceBackup
-        Write-Host "  Backup oculto creado." -ForegroundColor DarkGray
+    $report+=@"
+
+╠══════════════════════════════════════════════════════════════╣
+║ EVIDENCIAS LOG: $($Global:Evidencias.Count) entries
+╚══════════════════════════════════════════════════════════════╝
+"@
+    if($Global:Evidencias.Count -gt 0){
+        $report+="`n─── EVIDENCIA COMPLETA ───`n"
+        foreach($ev in $Global:Evidencias){
+            $report+="$ev`n"
+        }
     }
+    $desktop=[Environment]::GetFolderPath("Desktop")
+    $path="$desktop\AC-BQGE_Report_v2_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $report|Out-File -FilePath $path -Encoding UTF8
+    Write-Host "  Reporte guardado: $path" -ForegroundColor Green
+    if($Global:ModoSigiloso){Set-EvidenceBackup;Write-Host "  Backup oculto creado." -ForegroundColor DarkGray}
 }
 
 function Invoke-SelfCheckLoop {
-    $savedIntegrity = Test-ScriptIntegrity
-    if (-not $savedIntegrity) {
+    $savedIntegrity=Test-ScriptIntegrity
+    if(-not $savedIntegrity){
         Write-Evidence "[!] Self-check loop detecto corrupcion!"
-        $dangerMsg = @"
-DETECTED: Script integrity check failed on $env:COMPUTERNAME at $(Get-Date)
-Action: Evidence has been distributed to alternate locations.
-"@
-        try {
-            Write-EventLog -LogName "Application" -Source "AC-BQGE" -EntryType Warning -EventId 9999 -Message $dangerMsg -ErrorAction SilentlyContinue
-        } catch {}
+        $dangerMsg="DETECTED: Script integrity check failed on $env:COMPUTERNAME at $(Get-Date)`nAction: Evidence has been distributed to alternate locations."
+        try{Write-EventLog -LogName "Application" -Source "AC-BQGE" -EntryType Warning -EventId 9999 -Message $dangerMsg}catch{}
     }
 }
 
-# ============================================
-# MAIN LOOP
-# ============================================
-
-$Global:MenuActive = $true
-while ($Global:MenuActive) {
+#============================================================
+#MAIN LOOP
+#============================================================
+Initialize-System
+Initialize-Tools
+$Global:MenuActive=$true
+while($Global:MenuActive){
     Show-Menu
-    $choice = Read-Host "  Opcion"
-    
-    switch ($choice) {
-        "1" {
+    $choice=Read-Host "  Opcion"
+    switch($choice){
+        "1"{
             Show-Banner
             Write-Host "  [ESCANEO RAPIDO]" -ForegroundColor Yellow
-            $results = @()
-            $results += Scan-Processes
-            $results += Scan-Memory
+            $results=@()
+            $results+=Scan-Processes
+            $results+=Scan-Memory
+            $results+=Scan-Network
             Show-Results $results
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "2" {
+        "2"{
             Show-Banner
-            Write-Host "  [ESCANEO COMPLETO - 7 CAPAS]" -ForegroundColor Red
-            $allResults = Invoke-AllLayers
+            Write-Host "  [ESCANEO COMPLETO - 16 CAPAS]" -ForegroundColor Red
+            $allResults=Invoke-AllLayers
             Show-Results $allResults
-            Write-DumpReport $allResults
+            Write-ForensicReport $allResults
             Invoke-SelfCheckLoop
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "3" {
+        "3"{
             Show-Banner
             Write-Host "  [.minecraft FORENSICO]" -ForegroundColor Yellow
-            $results = Scan-MinecraftFolder
+            $results=Scan-MinecraftFolder
             Show-Results $results
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "4" {
+        "4"{
             Show-Banner
             Write-Host "  [PAPELERA + ARCHIVOS ELIMINADOS]" -ForegroundColor Yellow
-            $results = Scan-RecycleBinDeep
+            $results=Scan-RecycleBinDeep
             Show-Results $results
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "5" {
+        "5"{
             Show-Banner
-            Write-Host "  [BAM + PREFETCH + EVENTOS]" -ForegroundColor Yellow
-            $results = Scan-ExecutionHistory
+            Write-Host "  [BAM + PREFETCH + EVENTOS + USERASSIST]" -ForegroundColor Yellow
+            $results=Scan-ExecutionHistory
             Show-Results $results
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "6" {
+        "6"{
             Show-Banner
             Write-Host "  [ESCANEO KERNEL]" -ForegroundColor Red
-            if (-not (Test-Admin)) {
+            if(-not $Global:IsAdmin){
                 Write-Host "  [!] ALERTA: No estas ejecutando como Administrador." -ForegroundColor Red
-                Write-Host "  El escaneo de kernel requiere privilegios elevados." -ForegroundColor Yellow
+                Write-Host "  Algunos escaneos requieren privilegios elevados." -ForegroundColor Yellow
             }
-            $results = Scan-Kernel
+            $results=Scan-Kernel
             Show-Results $results
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "7" {
-            $Global:ModoSigiloso = !$Global:ModoSigiloso
+        "7"{
             Show-Banner
-            if ($Global:ModoSigiloso) {
+            Write-Host "  [AMCACHE + SHIMCACHE + SRUM]" -ForegroundColor Cyan
+            $results=Scan-Amcache
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "8"{
+            Show-Banner
+            Write-Host "  [NTFS FORENSIC (MFT, USN, ADS)]" -ForegroundColor Cyan
+            $results=Scan-NTFSForensic
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "9"{
+            Show-Banner
+            Write-Host "  [NETWORK FORENSICS]" -ForegroundColor Yellow
+            $results=Scan-Network
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "10"{
+            Show-Banner
+            Write-Host "  [BROWSER FORENSICS]" -ForegroundColor White
+            $results=Scan-BrowserForensics
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "11"{
+            Show-Banner
+            Write-Host "  [WINDOWS DEFENDER]" -ForegroundColor Yellow
+            $results=Scan-Defender
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "12"{
+            Show-Banner
+            Write-Host "  [USB + REMOVABLE MEDIA]" -ForegroundColor White
+            $results=Scan-USB
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "13"{
+            Show-Banner
+            Write-Host "  [JUMPLIST + RECENT + SHELLBAGS]" -ForegroundColor White
+            $results=Scan-JumpListRecent
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "14"{
+            Show-Banner
+            Write-Host "  [ANTI-BYPASS (DLL hijack, fileless, VM, stego)]" -ForegroundColor Magenta
+            $results=Scan-AntiBypass
+            Show-Results $results
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "15"{
+            $Global:ModoSigiloso=!$Global:ModoSigiloso
+            Show-Banner
+            if($Global:ModoSigiloso){
                 Write-Host "  [MODO SIGILOSO ACTIVADO]" -ForegroundColor DarkGray
                 Write-Host "  Output reducido, evidencias ocultas." -ForegroundColor DarkGray
-                $Global:LogFile = "$env:USERPROFILE\AppData\Local\Temp\_ac_evidence_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+                $Global:LogFile="$env:USERPROFILE\AppData\Local\Temp\_ac_evidence_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
                 Write-Host "  Log en: $($Global:LogFile)" -ForegroundColor DarkGray
-                if (-not (Test-Path $Global:LogFile)) { "" | Out-File $Global:LogFile -Encoding UTF8 }
+                if(-not (Test-Path $Global:LogFile)){" "|Out-File $Global:LogFile -Encoding UTF8}
                 attrib +h $Global:LogFile
-            } else {
+            }else{
                 Write-Host "  [MODO SIGILOSO DESACTIVADO]" -ForegroundColor White
-                $Global:LogFile = $null
+                $Global:LogFile=$null
             }
             Backup-Script
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "8" {
+        "16"{
             Show-Banner
             Write-Host "  [DUMP COMPLETO]" -ForegroundColor Red
-            $allResults = Invoke-AllLayers
+            $allResults=Invoke-AllLayers
             Show-Results $allResults
-            Write-DumpReport $allResults
-            if ($Global:ModoSigiloso) {
-                Write-Host "  Backup sigiloso creado." -ForegroundColor DarkGray
-            }
+            Write-ForensicReport $allResults
+            if($Global:ModoSigiloso){Write-Host "  Backup sigiloso creado." -ForegroundColor DarkGray}
             Write-Host ""
             Write-Host "  Backup de script..." -ForegroundColor Yellow
             Backup-Script
@@ -1828,13 +2191,22 @@ while ($Global:MenuActive) {
             Write-Host ""
             Write-Host "  DUMP COMPLETO FINALIZADO." -ForegroundColor Green
             Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
-            $null = Read-Host
+            $null=Read-Host
         }
-        "9" {
+        "17"{
+            Show-Banner
+            Write-Host "  [GENERANDO REPORTE FORENSE COMPLETO]" -ForegroundColor Green
+            $allResults=Invoke-AllLayers
+            Show-Results $allResults
+            Write-ForensicReport $allResults
+            Write-Host "  Presiona Enter para continuar..." -ForegroundColor DarkGray
+            $null=Read-Host
+        }
+        "18"{
             Write-Host "  Saliendo..." -ForegroundColor Yellow
-            $Global:MenuActive = $false
+            $Global:MenuActive=$false
         }
-        default {
+        default{
             Write-Host "  Opcion invalida." -ForegroundColor Red
             Start-Sleep -Milliseconds 500
         }
